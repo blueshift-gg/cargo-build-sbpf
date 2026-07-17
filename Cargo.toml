@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Cargo subcommand for building SBPF programs with upstream nightly Rust"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/blueshift-gg/cargo-build-sbpf"
+authors = ["Claire Fan <claire@blueshift.gg>"]
+rust-version = "1.90"
+readme = "README.md"
+keywords = ["solana", "bpf", "sbpf", "cargo", "build"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "cargo-build-sbpf"
