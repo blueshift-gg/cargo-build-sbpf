@@ -28,7 +28,7 @@ pub(crate) const RECOMMENDED_RUSTFLAGS: &[&str] = &[
     "link-arg=--llvm-args=--disable-gotox",
 ];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum SbpfArch {
     V0,
     #[default]
@@ -36,23 +36,14 @@ pub(crate) enum SbpfArch {
 }
 
 impl SbpfArch {
-    pub(crate) fn parse(value: &str) -> Result<Self> {
-        match value {
-            "v0" => Ok(Self::V0),
-            "v3" => Ok(Self::V3),
-            _ => bail!("unsupported SBPF arch `{value}`; expected `v0` or `v3`"),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::V0 => "v0",
-            Self::V3 => "v3",
-        }
-    }
-
     fn linker_arg(self) -> String {
-        format!("link-arg=--arch={}", self.as_str())
+        format!(
+            "link-arg=--arch={}",
+            match self {
+                Self::V0 => "v0",
+                Self::V3 => "v3",
+            }
+        )
     }
 }
 

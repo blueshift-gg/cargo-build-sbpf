@@ -26,7 +26,12 @@ pub(crate) struct Cli {
     trailing_var_arg = true
 )]
 struct Args {
-    #[arg(long, value_parser = parse_arch, value_name = "ARCH", help = "Build for SBPF arch v0 or v3 (default: v3)")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "ARCH",
+        help = "Build for SBPF arch v0 or v3 (default: v3)"
+    )]
     arch: Option<SbpfArch>,
 
     #[arg(
@@ -78,10 +83,6 @@ pub(crate) fn parse_cli(mut args: Vec<OsString>) -> Result<Option<Cli>> {
         }
         Err(err) => Err(err.into()),
     }
-}
-
-fn parse_arch(value: &str) -> Result<SbpfArch, String> {
-    SbpfArch::parse(value).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
