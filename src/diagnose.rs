@@ -1,14 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use guppy::graph::cargo::{CargoOptions, CargoSet};
-use guppy::graph::feature::StandardFeatures;
-use guppy::graph::DependencyDirection;
-use guppy::platform::{Platform, PlatformSpec, TargetFeatures};
-use guppy::MetadataCommand;
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
@@ -178,39 +172,30 @@ fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<
 }
 
 fn dependency_tree_contains_builtins(manifest_path: &Path) -> Result<bool> {
-    let package_graph = MetadataCommand::new()
-        .cargo_path(cargo_bin())
-        .manifest_path(manifest_path)
-        .build_graph()
-        .with_context(|| {
-            format!(
-                "failed to run cargo metadata for {}",
-                manifest_path.display()
-            )
-        })?;
+    let output = Command::new(cargo_bin())
+        .arg("tree")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--target")
+        .arg(TARGET)
+        .arg("-e")
+        .arg("normal,build")
+        .arg("--prefix")
+        .arg("none")
+        .stderr(Stdio::inherit())
+        .output()
+        .with_context(|| format!("failed to run cargo tree for {}", manifest_path.display()))?;
 
-    let platform = Platform::new(TARGET, TargetFeatures::Unknown)
-        .with_context(|| format!("failed to resolve target platform {TARGET}"))?;
-    let mut cargo_opts = CargoOptions::new();
-    cargo_opts.set_target_platform(PlatformSpec::Platform(Arc::new(platform)));
+    if !output.status.success() {
+        bail!("cargo tree failed for {}", manifest_path.display());
+    }
 
-    let initials = package_graph
-        .resolve_workspace()
-        .to_feature_set(StandardFeatures::Default);
-    let no_extra_features = package_graph
-        .resolve_none()
-        .to_feature_set(StandardFeatures::Default);
-
-    let cargo_set = CargoSet::new(initials, no_extra_features, &cargo_opts)
-        .context("failed to simulate cargo build dependency resolution")?;
-
-    let contains_builtins = cargo_set.all_features().into_iter().any(|(_, features)| {
-        features
-            .packages_with_features(DependencyDirection::Forward)
-            .any(|feature_list| feature_list.package().name() == BUILTINS_CRATE)
-    });
-
-    Ok(contains_builtins)
+    let stdout =
+        String::from_utf8(output.stdout).context("cargo tree returned non-UTF-8 output")?;
+    Ok(stdout.lines().any(|line| {
+        line.strip_prefix(BUILTINS_CRATE)
+            .is_some_and(|rest| rest.starts_with(' '))
+    }))
 }
 
 fn add_compiler_builtins(manifest_path: &Path) -> Result<()> {
