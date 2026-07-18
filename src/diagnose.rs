@@ -136,7 +136,7 @@ fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<
         });
     }
 
-    if which::which("sbpf-linker").is_err() {
+    if !sbpf_linker_available() {
         issues.push(Issue {
             severity: Severity::Required,
             check: "sbpf-linker",
@@ -330,6 +330,15 @@ fn print_issues(issues: &[Issue]) {
     for issue in issues {
         eprintln!("- {}: {}", issue.check, issue.reason);
     }
+}
+
+fn sbpf_linker_available() -> bool {
+    Command::new("sbpf-linker")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn nightly_available() -> bool {
