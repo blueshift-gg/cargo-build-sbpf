@@ -26,8 +26,6 @@ pub(crate) const RECOMMENDED_RUSTFLAGS: &[&str] = &[
     "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5",
     "-C",
     "link-arg=--llvm-args=--disable-gotox",
-    "-C",
-    "link-arg=--override-cpu-flag=v4",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
