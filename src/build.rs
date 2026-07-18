@@ -53,7 +53,7 @@ impl SbpfArch {
     }
 
     fn linker_arg(self) -> String {
-        format!("link-arg=--sbpf-arch={}", self.as_str())
+        format!("link-arg=--arch={}", self.as_str())
     }
 }
 
@@ -395,12 +395,12 @@ rustflags = [
 \"-C\",
 \"linker=sbpf-linker\",
 \"-C\",
-\"link-arg=--sbpf-arch=v3\",
+\"link-arg=--arch=v3\",
 ]
 ";
         let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V0).unwrap();
-        assert!(updated.contains("\"link-arg=--sbpf-arch=v0\","));
-        assert!(!updated.contains("--sbpf-arch=v3"));
+        assert!(updated.contains("\"link-arg=--arch=v0\","));
+        assert!(!updated.contains("--arch=v3"));
         assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
             .unwrap()
             .is_empty());
