@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
-use toml_edit::{value, Array, DocumentMut, Item, Table};
+use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 pub(crate) const TARGET: &str = "bpfel-unknown-none";
 const TARGET_RUSTFLAGS_ENV: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
@@ -162,9 +162,21 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(target_table) = target_table.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target.{TARGET}]` must be a table");
     };
-    target_table["rustflags"] = value(Array::from_iter(target_rustflags(arch)));
+    target_table["rustflags"] = rustflags_config_array(arch);
 
     Ok(doc.to_string())
+}
+
+fn rustflags_config_array(arch: SbpfArch) -> Item {
+    let mut array = Array::default();
+    for flag in target_rustflags(arch) {
+        let mut value = Value::from(flag);
+        value.decor_mut().set_prefix("\n    ");
+        array.push_formatted(value);
+    }
+    array.set_trailing("\n");
+    array.set_trailing_comma(true);
+    value(array)
 }
 
 pub(crate) fn find_cargo_config(manifest_path: &Path) -> Option<PathBuf> {
@@ -346,6 +358,7 @@ rustflags = [
 ";
         let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V3).unwrap();
         assert!(updated.contains("build-std = [\"core\", \"alloc\"]"));
+        assert!(updated.contains("rustflags = [\n    \"-C\",\n"));
         for flag in rustflag_values(REQUIRED_RUSTFLAGS)
             .into_iter()
             .chain(rustflag_values(RECOMMENDED_RUSTFLAGS))

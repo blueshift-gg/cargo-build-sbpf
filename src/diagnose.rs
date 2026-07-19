@@ -285,6 +285,11 @@ fn ensure_recommended_cargo_config(config_path: &Path, arch: SbpfArch) -> Result
         .with_context(|| format!("failed to read {}", config_path.display()))?;
     let updated = ensure_recommended_cargo_config_in_content(&config, arch)?;
     if updated != config {
+        // Create a backup of the existing config.
+        let backup_path = config_path.with_file_name("config.backup.toml");
+        fs::write(&backup_path, &config)
+            .with_context(|| format!("failed to write {}", backup_path.display()))?;
+
         fs::write(config_path, updated)
             .with_context(|| format!("failed to write {}", config_path.display()))?;
     }
@@ -436,5 +441,33 @@ rustflags = [
         ];
 
         assert_eq!(unique_fixes(&issues).len(), 1);
+    }
+
+    #[test]
+    fn backs_up_config_only_when_fixed() {
+        let root = std::env::temp_dir().join(format!(
+            "cargo-build-sbpf-backup-test-{}",
+            std::process::id()
+        ));
+        let cargo_dir = root.join(".cargo");
+        let config_path = cargo_dir.join("config.toml");
+        let backup_path = cargo_dir.join("config.backup.toml");
+        let original = "[target.bpfel-unknown-none]\n";
+
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&cargo_dir).unwrap();
+        fs::write(&config_path, original).unwrap();
+
+        ensure_recommended_cargo_config(&config_path, SbpfArch::V3).unwrap();
+        // config was missing recommended flags, so it should be fixed and backup config should be created
+        assert_eq!(fs::read_to_string(&backup_path).unwrap(), original);
+
+        // remove backup
+        fs::remove_file(&backup_path).unwrap();
+        ensure_recommended_cargo_config(&config_path, SbpfArch::V3).unwrap();
+        // config is already fixed, so backup should not be created
+        assert!(!backup_path.exists());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }
