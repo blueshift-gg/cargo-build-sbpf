@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn rejects_invalid_arch() {
         let err = parse_cli(os_args(&["--arch", "v2"])).unwrap_err();
-        assert!(err.to_string().contains("expected `v0` or `v3`"));
+        assert!(err.to_string().contains("possible values: v0, v3"));
     }
 
     #[test]
