@@ -7,7 +7,7 @@ use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
     cargo_bin, ensure_recommended_cargo_config_in_content, find_cargo_config, parse_config,
-    rustflag_values, SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
+    SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
 };
 
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
@@ -236,15 +236,15 @@ pub(crate) fn missing_cargo_config_requirements(config: &str) -> Result<Vec<(Sev
         diagnosis.push((Severity::Required, format!("target.{TARGET} table")));
     }
 
-    for flag in rustflag_values(REQUIRED_RUSTFLAGS) {
-        if !config_rustflags_contain(&doc, &flag) {
-            diagnosis.push((Severity::Required, flag));
+    for flag in REQUIRED_RUSTFLAGS {
+        if !config_rustflags_contain(&doc, flag) {
+            diagnosis.push((Severity::Required, flag.to_string()));
         }
     }
 
-    for flag in rustflag_values(RECOMMENDED_RUSTFLAGS) {
-        if !config_rustflags_contain(&doc, &flag) {
-            diagnosis.push((Severity::Recommended, flag));
+    for flag in RECOMMENDED_RUSTFLAGS {
+        if !config_rustflags_contain(&doc, flag) {
+            diagnosis.push((Severity::Recommended, flag.to_string()));
         }
     }
 

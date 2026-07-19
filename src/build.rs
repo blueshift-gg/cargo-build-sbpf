@@ -11,20 +11,14 @@ const TARGET_RUSTFLAGS_ENV: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
 const BUILD_STD: &str = "build-std=core,alloc";
 
 pub(crate) const REQUIRED_RUSTFLAGS: &[&str] = &[
-    "-C",
     "linker=sbpf-linker",
-    "-C",
     "panic=abort",
-    "-C",
     "relocation-model=static",
-    "-C",
     "link-arg=--export=__multi3",
 ];
 
 pub(crate) const RECOMMENDED_RUSTFLAGS: &[&str] = &[
-    "-C",
     "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5",
-    "-C",
     "link-arg=--llvm-args=--disable-gotox",
 ];
 
@@ -250,23 +244,10 @@ fn has_build_std(args: &[OsString]) -> bool {
 fn target_rustflags(arch: SbpfArch) -> Vec<String> {
     REQUIRED_RUSTFLAGS
         .iter()
-        .copied()
-        .map(String::from)
-        .chain(["-C".to_string(), arch.linker_arg()])
-        .chain(RECOMMENDED_RUSTFLAGS.iter().copied().map(String::from))
-        .collect()
-}
-
-pub(crate) fn rustflag_values(flags: &[&str]) -> Vec<String> {
-    flags
-        .chunks(2)
-        .filter_map(|chunk| {
-            if chunk.first().is_some_and(|flag| *flag == "-C") {
-                chunk.get(1).copied().map(String::from)
-            } else {
-                None
-            }
-        })
+        .map(|flag| flag.to_string())
+        .chain([arch.linker_arg()])
+        .chain(RECOMMENDED_RUSTFLAGS.iter().map(|flag| flag.to_string()))
+        .flat_map(|flag| ["-C".to_string(), flag])
         .collect()
 }
 
@@ -359,9 +340,10 @@ rustflags = [
         let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V3).unwrap();
         assert!(updated.contains("build-std = [\"core\", \"alloc\"]"));
         assert!(updated.contains("rustflags = [\n    \"-C\",\n"));
-        for flag in rustflag_values(REQUIRED_RUSTFLAGS)
-            .into_iter()
-            .chain(rustflag_values(RECOMMENDED_RUSTFLAGS))
+        for flag in REQUIRED_RUSTFLAGS
+            .iter()
+            .chain(RECOMMENDED_RUSTFLAGS)
+            .map(|flag| flag.to_string())
             .chain([SbpfArch::V3.linker_arg()])
         {
             assert!(updated.contains(&flag), "missing {flag}");
