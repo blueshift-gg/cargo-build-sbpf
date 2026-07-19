@@ -147,7 +147,7 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(unstable) = unstable.as_table_mut() else {
         bail!("failed to parse Cargo config: `[unstable]` must be a table");
     };
-    unstable["build-std"] = string_array(["core", "alloc"]);
+    unstable["build-std"] = value(Array::from_iter(["core", "alloc"]));
 
     let target = doc
         .as_table_mut()
@@ -162,17 +162,9 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(target_table) = target_table.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target.{TARGET}]` must be a table");
     };
-    target_table["rustflags"] = rustflags_config_array(arch);
+    target_table["rustflags"] = value(Array::from_iter(target_rustflags(arch)));
 
     Ok(doc.to_string())
-}
-
-fn rustflags_config_array(arch: SbpfArch) -> Item {
-    let mut array = Array::default();
-    for flag in target_rustflags(arch) {
-        array.push(flag);
-    }
-    value(array)
 }
 
 pub(crate) fn find_cargo_config(manifest_path: &Path) -> Option<PathBuf> {
@@ -282,14 +274,6 @@ pub(crate) fn parse_config(config: &str) -> Result<DocumentMut> {
     config
         .parse::<DocumentMut>()
         .context("failed to parse Cargo config TOML")
-}
-
-fn string_array<const N: usize>(values: [&str; N]) -> Item {
-    let mut array = Array::default();
-    for value in values {
-        array.push(value);
-    }
-    value(array)
 }
 
 #[cfg(test)]
