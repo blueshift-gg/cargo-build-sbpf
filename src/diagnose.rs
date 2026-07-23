@@ -7,7 +7,7 @@ use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
     cargo_bin, ensure_recommended_cargo_config_in_content, find_cargo_config, parse_config,
-    SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
+    rustflag_key, SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
 };
 
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
@@ -155,6 +155,7 @@ fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<
     if let Some(config_path) = find_cargo_config(manifest_path) {
         let config_text = fs::read_to_string(&config_path)
             .with_context(|| format!("failed to read {}", config_path.display()))?;
+        ensure_recommended_cargo_config_in_content(&config_text, config.arch)?;
         for (severity, flag) in missing_cargo_config_requirements(&config_text)? {
             issues.push(Issue {
                 severity,
@@ -243,7 +244,7 @@ pub(crate) fn missing_cargo_config_requirements(config: &str) -> Result<Vec<(Sev
     }
 
     for flag in RECOMMENDED_RUSTFLAGS {
-        if !config_rustflags_contain(&doc, flag) {
+        if !config_rustflags_contain_key(&doc, flag) {
             diagnosis.push((Severity::Recommended, flag.to_string()));
         }
     }
@@ -277,6 +278,20 @@ fn config_rustflags_contain(doc: &DocumentMut, required: &str) -> bool {
             rustflags
                 .iter()
                 .any(|value| value.as_str() == Some(required))
+        })
+}
+
+fn config_rustflags_contain_key(doc: &DocumentMut, required: &str) -> bool {
+    let required = rustflag_key(required);
+    target_config_table(doc)
+        .and_then(|target| target.get("rustflags"))
+        .and_then(Item::as_array)
+        .is_some_and(|rustflags| {
+            rustflags.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|flag| rustflag_key(flag) == required)
+            })
         })
 }
 
@@ -466,6 +481,36 @@ rustflags = [
         fs::remove_file(&backup_path).unwrap();
         ensure_recommended_cargo_config(&config_path, SbpfArch::V3).unwrap();
         // config is already fixed, so backup should not be created
+        assert!(!backup_path.exists());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn conflict_does_not_fix_or_back_up_config() {
+        let root = std::env::temp_dir().join(format!(
+            "cargo-build-sbpf-conflict-test-{}",
+            std::process::id()
+        ));
+        let cargo_dir = root.join(".cargo");
+        let config_path = cargo_dir.join("config.toml");
+        let backup_path = cargo_dir.join("config.backup.toml");
+        // original config with conflicting flag
+        let original =
+            "[target.bpfel-unknown-none]\nrustflags = [\"-C\", \"linker=custom-linker\"]\n";
+
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&cargo_dir).unwrap();
+        fs::write(&config_path, original).unwrap();
+
+        let error = ensure_recommended_cargo_config(&config_path, SbpfArch::V3)
+            .unwrap_err()
+            .to_string();
+        // error message should be produced
+        assert!(error.contains("conflicting rustflag"));
+        // original config should not be modified
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+        // backup should not be created
         assert!(!backup_path.exists());
 
         fs::remove_dir_all(&root).unwrap();
