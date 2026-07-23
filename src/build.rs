@@ -156,21 +156,98 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(target_table) = target_table.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target.{TARGET}]` must be a table");
     };
-    target_table["rustflags"] = rustflags_config_array(arch);
+    let existing_rustflags = target_table
+        .get("rustflags")
+        .map(|item| {
+            item.as_array().with_context(|| {
+                format!(
+                    "failed to parse Cargo config: `[target.{TARGET}].rustflags` must be an array"
+                )
+            })
+        })
+        .transpose()?;
+    let rustflags = rustflags_config_array(existing_rustflags, arch)?;
+    target_table["rustflags"] = rustflags;
 
     Ok(doc.to_string())
 }
 
-fn rustflags_config_array(arch: SbpfArch) -> Item {
+fn rustflags_config_array(existing: Option<&Array>, arch: SbpfArch) -> Result<Item> {
+    let mut flags = Vec::new();
+    if let Some(existing) = existing {
+        for value in existing.iter() {
+            flags.push(
+                value
+                    .as_str()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse Cargo config: `[target.{TARGET}].rustflags` must contain only strings"
+                        )
+                    })?
+                    .to_owned(),
+            );
+        }
+    }
+
+    let rustflags = target_rustflags(arch);
+    for required in rustflags.chunks_exact(2).map(|pair| &pair[1]) {
+        let key = rustflag_key(required);
+        if key == ("linker", "--arch") {
+            if let Some(existing) = flags
+                .iter_mut()
+                .find(|existing| rustflag_key(existing) == key)
+            {
+                // Use the selected arch.
+                *existing = required.clone();
+                continue;
+            }
+        }
+
+        if let Some(conflicting) = flags
+            .iter()
+            .find(|existing| rustflag_key(existing) == key && *existing != required)
+        {
+            if matches!(key, ("rustc", "linker" | "panic" | "relocation-model")) {
+                bail!(
+                    "conflicting rustflag: config contains `{conflicting}`, but cargo-build-sbpf requires `{required}`"
+                );
+            }
+
+            // --export is appendable so preserve its value without producing conflict.
+            if key != ("linker", "--export") {
+                continue;
+            }
+        }
+
+        if !flags.iter().any(|existing| existing == required) {
+            flags.push("-C".to_string());
+            flags.push(required.clone());
+        }
+    }
+
     let mut array = Array::default();
-    for flag in target_rustflags(arch) {
+    for flag in flags {
         let mut value = Value::from(flag);
         value.decor_mut().set_prefix("\n    ");
         array.push_formatted(value);
     }
     array.set_trailing("\n");
     array.set_trailing_comma(true);
-    value(array)
+    Ok(value(array))
+}
+
+// Returns the (namespace, name) key for the given flag
+// Example: link-arg=--arch=v3 returns ("linker", "--arch")
+pub(crate) fn rustflag_key(flag: &str) -> (&'static str, &str) {
+    let (namespace, flag) = if let Some(flag) = flag.strip_prefix("link-arg=--llvm-args=") {
+        ("llvm", flag)
+    } else if let Some(flag) = flag.strip_prefix("link-arg=") {
+        ("linker", flag)
+    } else {
+        ("rustc", flag)
+    };
+    let name = flag.split_once('=').map_or(flag, |(name, _)| name);
+    (namespace, name)
 }
 
 pub(crate) fn find_cargo_config(manifest_path: &Path) -> Option<PathBuf> {
@@ -335,6 +412,10 @@ mod tests {
 rustflags = [
 \"-C\",
 \"linker=sbpf-linker\",
+\"-C\",
+\"lto=off\",
+\"-C\",
+\"link-arg=--dump-module=llvm_dump\",
 ]
 ";
         let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V3).unwrap();
@@ -348,6 +429,11 @@ rustflags = [
         {
             assert!(updated.contains(&flag), "missing {flag}");
         }
+
+        // existing flags should be preserved
+        assert!(updated.contains("\"lto=off\""));
+        assert!(updated.contains("\"link-arg=--dump-module=llvm_dump\""));
+
         assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
             .unwrap()
             .is_empty());
@@ -373,5 +459,44 @@ rustflags = [
         assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn rejects_conflicting_cargo_config_flags() {
+        for (existing, required) in [
+            ("linker=custom-linker", "linker=sbpf-linker"),
+            ("panic=unwind", "panic=abort"),
+            ("relocation-model=pic", "relocation-model=static"),
+        ] {
+            let config = format!("[target.{TARGET}]\nrustflags = [\"-C\", \"{existing}\"]\n");
+            let error = ensure_recommended_cargo_config_in_content(&config, SbpfArch::V3)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("conflicting rustflag"));
+            assert!(error.contains(existing));
+            assert!(error.contains(required));
+        }
+    }
+
+    #[test]
+    fn appends_exports_and_preserves_existing_recommended_values() {
+        let config = "\
+[target.bpfel-unknown-none]
+rustflags = [
+\"-C\",
+\"link-arg=--export=custom_symbol\",
+\"-C\",
+\"link-arg=--llvm-args=--bpf-max-stores-per-memfunc=10\",
+]
+";
+        let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V3).unwrap();
+        // existing export should be preserved
+        assert!(updated.contains("link-arg=--export=custom_symbol"));
+        assert!(updated.contains("link-arg=--export=__multi3"));
+        // existing recommended option should be preserved
+        assert!(updated.contains("link-arg=--llvm-args=--bpf-max-stores-per-memfunc=10"));
+        assert!(!updated.contains("link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5"));
+        // missing recommended option should be added
+        assert!(updated.contains("link-arg=--llvm-args=--disable-gotox"));
     }
 }
