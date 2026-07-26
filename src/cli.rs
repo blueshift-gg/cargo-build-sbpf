@@ -67,7 +67,9 @@ pub(crate) fn parse_cli(mut args: Vec<OsString>) -> Result<Option<Cli>> {
         args.remove(0);
     }
 
-    match Args::try_parse_from(std::iter::once(OsString::from("cargo-build-sbpf")).chain(args)) {
+    match Args::try_parse_from(
+        std::iter::once(OsString::from("cargo-build-sbpf")).chain(args),
+    ) {
         Ok(args) => Ok(Some(Cli {
             diagnosis_config: DiagnosisConfig {
                 arch: args.arch.unwrap_or_default(),
@@ -103,9 +105,12 @@ mod tests {
 
     #[test]
     fn parses_tool_flags_without_forwarding_them() {
-        let cli = parse_cli(os_args(&["--skip-builtins-check", "--no-default-features"]))
-            .unwrap()
-            .unwrap();
+        let cli = parse_cli(os_args(&[
+            "--skip-builtins-check",
+            "--no-default-features",
+        ]))
+        .unwrap()
+        .unwrap();
         assert!(cli.diagnosis_config.skip_builtins_check);
         assert_eq!(cli.build_args, os_args(&["--no-default-features"]));
     }
@@ -161,7 +166,8 @@ mod tests {
 
     #[test]
     fn rejects_arch_with_diagnose() {
-        let err = parse_cli(os_args(&["--diagnose", "--arch", "v0"])).unwrap_err();
+        let err =
+            parse_cli(os_args(&["--diagnose", "--arch", "v0"])).unwrap_err();
         assert!(err
             .to_string()
             .contains("cannot be used with '--arch <ARCH>'"));

@@ -6,12 +6,13 @@ use anyhow::{bail, Context, Result};
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
-    cargo_bin, ensure_recommended_cargo_config_in_content, find_cargo_config, parse_config,
-    SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
+    cargo_bin, ensure_recommended_cargo_config_in_content, find_cargo_config,
+    parse_config, SbpfArch, RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
 };
 
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
-const BUILTINS_GIT: &str = "https://github.com/blueshift-gg/solana-compiler-builtins";
+const BUILTINS_GIT: &str =
+    "https://github.com/blueshift-gg/solana-compiler-builtins";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
@@ -42,7 +43,10 @@ pub(crate) struct DiagnosisConfig {
     pub(crate) skip_builtins_check: bool,
 }
 
-pub(crate) fn run_diagnose(manifest_path: &Path, config: DiagnosisConfig) -> Result<u8> {
+pub(crate) fn run_diagnose(
+    manifest_path: &Path,
+    config: DiagnosisConfig,
+) -> Result<u8> {
     let issues = collect_issues(manifest_path, &config)?;
 
     if issues.is_empty() {
@@ -77,7 +81,10 @@ pub(crate) fn run_diagnose(manifest_path: &Path, config: DiagnosisConfig) -> Res
     }
 }
 
-pub(crate) fn ensure_build_ready(manifest_path: &Path, config: DiagnosisConfig) -> Result<()> {
+pub(crate) fn ensure_build_ready(
+    manifest_path: &Path,
+    config: DiagnosisConfig,
+) -> Result<()> {
     let issues = collect_issues(manifest_path, &config)?;
     let (required, recommended): (Vec<Issue>, Vec<Issue>) = issues
         .into_iter()
@@ -118,7 +125,10 @@ pub(crate) fn ensure_build_ready(manifest_path: &Path, config: DiagnosisConfig) 
     }
 }
 
-fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<Issue>> {
+fn collect_issues(
+    manifest_path: &Path,
+    config: &DiagnosisConfig,
+) -> Result<Vec<Issue>> {
     let mut issues = Vec::new();
 
     if !nightly_available() {
@@ -141,7 +151,9 @@ fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<
         });
     }
 
-    if !config.skip_builtins_check && !dependency_tree_contains_builtins(manifest_path)? {
+    if !config.skip_builtins_check
+        && !dependency_tree_contains_builtins(manifest_path)?
+    {
         issues.push(Issue {
             severity: Severity::Required,
             check: BUILTINS_CRATE,
@@ -153,9 +165,13 @@ fn collect_issues(manifest_path: &Path, config: &DiagnosisConfig) -> Result<Vec<
     }
 
     if let Some(config_path) = find_cargo_config(manifest_path) {
-        let config_text = fs::read_to_string(&config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?;
-        for (severity, flag) in missing_cargo_config_requirements(&config_text)? {
+        let config_text =
+            fs::read_to_string(&config_path).with_context(|| {
+                format!("failed to read {}", config_path.display())
+            })?;
+        for (severity, flag) in
+            missing_cargo_config_requirements(&config_text)?
+        {
             issues.push(Issue {
                 severity,
                 check: "Cargo config",
@@ -184,14 +200,16 @@ fn dependency_tree_contains_builtins(manifest_path: &Path) -> Result<bool> {
         .arg("none")
         .stderr(Stdio::inherit())
         .output()
-        .with_context(|| format!("failed to run cargo tree for {}", manifest_path.display()))?;
+        .with_context(|| {
+            format!("failed to run cargo tree for {}", manifest_path.display())
+        })?;
 
     if !output.status.success() {
         bail!("cargo tree failed for {}", manifest_path.display());
     }
 
-    let stdout =
-        String::from_utf8(output.stdout).context("cargo tree returned non-UTF-8 output")?;
+    let stdout = String::from_utf8(output.stdout)
+        .context("cargo tree returned non-UTF-8 output")?;
     Ok(stdout.lines().any(|line| {
         line.strip_prefix(BUILTINS_CRATE)
             .is_some_and(|rest| rest.starts_with(' '))
@@ -221,7 +239,9 @@ fn add_compiler_builtins(manifest_path: &Path) -> Result<()> {
     }
 }
 
-pub(crate) fn missing_cargo_config_requirements(config: &str) -> Result<Vec<(Severity, String)>> {
+pub(crate) fn missing_cargo_config_requirements(
+    config: &str,
+) -> Result<Vec<(Severity, String)>> {
     let doc = parse_config(config)?;
     let mut diagnosis = Vec::new();
 
@@ -274,24 +294,28 @@ fn config_rustflags_contain(doc: &DocumentMut, required: &str) -> bool {
         .and_then(|target| target.get("rustflags"))
         .and_then(Item::as_array)
         .is_some_and(|rustflags| {
-            rustflags
-                .iter()
-                .any(|value| value.as_str() == Some(required))
+            rustflags.iter().any(|value| value.as_str() == Some(required))
         })
 }
 
-fn ensure_recommended_cargo_config(config_path: &Path, arch: SbpfArch) -> Result<()> {
-    let config = fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read {}", config_path.display()))?;
+fn ensure_recommended_cargo_config(
+    config_path: &Path,
+    arch: SbpfArch,
+) -> Result<()> {
+    let config = fs::read_to_string(config_path).with_context(|| {
+        format!("failed to read {}", config_path.display())
+    })?;
     let updated = ensure_recommended_cargo_config_in_content(&config, arch)?;
     if updated != config {
         // Create a backup of the existing config.
         let backup_path = config_path.with_file_name("config.backup.toml");
-        fs::write(&backup_path, &config)
-            .with_context(|| format!("failed to write {}", backup_path.display()))?;
+        fs::write(&backup_path, &config).with_context(|| {
+            format!("failed to write {}", backup_path.display())
+        })?;
 
-        fs::write(config_path, updated)
-            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        fs::write(config_path, updated).with_context(|| {
+            format!("failed to write {}", config_path.display())
+        })?;
     }
     Ok(())
 }
@@ -301,7 +325,9 @@ fn apply_fix(manifest_path: &Path, fix: &Fix, arch: SbpfArch) -> Result<()> {
         Fix::InstallNightly => install_nightly(),
         Fix::InstallSbpfLinker => install_sbpf_linker(),
         Fix::AddCompilerBuiltins => add_compiler_builtins(manifest_path),
-        Fix::EnsureCargoConfig(path) => ensure_recommended_cargo_config(path, arch),
+        Fix::EnsureCargoConfig(path) => {
+            ensure_recommended_cargo_config(path, arch)
+        }
     }
 }
 
@@ -371,7 +397,8 @@ mod tests {
 
     #[test]
     fn dependency_tree_excludes_builtins_for_this_crate() {
-        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let manifest_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(!dependency_tree_contains_builtins(&manifest_path).unwrap());
     }
 
@@ -415,9 +442,10 @@ rustflags = [
 ]
 ";
         let diagnosis = missing_cargo_config_requirements(config).unwrap();
-        assert!(diagnosis.iter().any(
-            |(severity, flag)| *severity == Severity::Required && flag == "linker=sbpf-linker"
-        ));
+        assert!(diagnosis
+            .iter()
+            .any(|(severity, flag)| *severity == Severity::Required
+                && flag == "linker=sbpf-linker"));
         assert!(diagnosis
             .iter()
             .all(|(severity, _)| *severity != Severity::Recommended));
