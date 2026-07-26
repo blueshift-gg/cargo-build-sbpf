@@ -70,9 +70,8 @@ fn manifest_path_arg(build_args: &[OsString]) -> Option<PathBuf> {
             return iter.next().map(PathBuf::from);
         }
 
-        if let Some(value) = arg
-            .to_str()
-            .and_then(|arg| arg.strip_prefix("--manifest-path="))
+        if let Some(value) =
+            arg.to_str().and_then(|arg| arg.strip_prefix("--manifest-path="))
         {
             return Some(PathBuf::from(value));
         }
@@ -85,7 +84,8 @@ fn absolutize(path: PathBuf) -> Result<PathBuf> {
     if path.is_absolute() {
         Ok(path)
     } else {
-        let cwd = env::current_dir().context("failed to read current directory")?;
+        let cwd =
+            env::current_dir().context("failed to read current directory")?;
         Ok(cwd.join(path))
     }
 }
@@ -150,9 +150,8 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(target) = target.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target]` must be a table");
     };
-    let target_table = target
-        .entry(TARGET)
-        .or_insert_with(|| Item::Table(Table::new()));
+    let target_table =
+        target.entry(TARGET).or_insert_with(|| Item::Table(Table::new()));
     let Some(target_table) = target_table.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target.{TARGET}]` must be a table");
     };
@@ -197,9 +196,7 @@ fn has_release_or_profile(args: &[OsString]) -> bool {
     args.iter().any(|arg| {
         arg == "--release"
             || arg == "--profile"
-            || arg
-                .to_str()
-                .is_some_and(|arg| arg.starts_with("--profile="))
+            || arg.to_str().is_some_and(|arg| arg.starts_with("--profile="))
     })
 }
 
@@ -230,10 +227,7 @@ fn has_build_std(args: &[OsString]) -> bool {
             continue;
         }
 
-        if arg
-            .to_str()
-            .is_some_and(|arg| arg.starts_with("-Zbuild-std"))
-        {
+        if arg.to_str().is_some_and(|arg| arg.starts_with("-Zbuild-std")) {
             return true;
         }
     }
@@ -254,7 +248,9 @@ fn target_rustflags(arch: SbpfArch) -> Vec<String> {
 fn merged_target_rustflags(arch: SbpfArch) -> String {
     let sbpf_flags = target_rustflags(arch).join(" ");
     match env::var(TARGET_RUSTFLAGS_ENV) {
-        Ok(existing) if !existing.trim().is_empty() => format!("{existing} {sbpf_flags}"),
+        Ok(existing) if !existing.trim().is_empty() => {
+            format!("{existing} {sbpf_flags}")
+        }
         _ => sbpf_flags,
     }
 }
@@ -264,9 +260,7 @@ pub(crate) fn cargo_bin() -> OsString {
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<DocumentMut> {
-    config
-        .parse::<DocumentMut>()
-        .context("failed to parse Cargo config TOML")
+    config.parse::<DocumentMut>().context("failed to parse Cargo config TOML")
 }
 
 #[cfg(test)]
@@ -282,7 +276,10 @@ mod tests {
     #[test]
     fn finds_manifest_path_forms() {
         assert_eq!(
-            manifest_path_arg(&os_args(&["--manifest-path", "foo/Cargo.toml"])),
+            manifest_path_arg(&os_args(&[
+                "--manifest-path",
+                "foo/Cargo.toml"
+            ])),
             Some(PathBuf::from("foo/Cargo.toml"))
         );
         assert_eq!(
@@ -337,7 +334,9 @@ rustflags = [
 \"linker=sbpf-linker\",
 ]
 ";
-        let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V3).unwrap();
+        let updated =
+            ensure_recommended_cargo_config_in_content(config, SbpfArch::V3)
+                .unwrap();
         assert!(updated.contains("build-std = [\"core\", \"alloc\"]"));
         assert!(updated.contains("rustflags = [\n    \"-C\",\n"));
         for flag in REQUIRED_RUSTFLAGS
@@ -367,7 +366,9 @@ rustflags = [
 \"link-arg=--arch=v3\",
 ]
 ";
-        let updated = ensure_recommended_cargo_config_in_content(config, SbpfArch::V0).unwrap();
+        let updated =
+            ensure_recommended_cargo_config_in_content(config, SbpfArch::V0)
+                .unwrap();
         assert!(updated.contains("\"link-arg=--arch=v0\","));
         assert!(!updated.contains("--arch=v3"));
         assert!(crate::diagnose::missing_cargo_config_requirements(&updated)

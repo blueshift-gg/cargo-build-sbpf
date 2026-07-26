@@ -19,11 +19,17 @@ fn main() -> ExitCode {
 
         let manifest_path = locate_manifest(&cli.build_args)?;
         if cli.diagnose {
-            return run_diagnose(&manifest_path, cli.diagnosis_config).map(Some);
+            return run_diagnose(&manifest_path, cli.diagnosis_config)
+                .map(Some);
         }
 
         ensure_build_ready(&manifest_path, cli.diagnosis_config)?;
-        run_cargo_build(&manifest_path, &cli.build_args, cli.diagnosis_config.arch).map(Some)
+        run_cargo_build(
+            &manifest_path,
+            &cli.build_args,
+            cli.diagnosis_config.arch,
+        )
+        .map(Some)
     })();
 
     match result {
