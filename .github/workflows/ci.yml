@@ -11,33 +11,32 @@ env:
 
 jobs:
   fmt:
-    name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: rustfmt (check)
-        run: cargo +nightly fmt --all -- --check
+      - run: cargo fmt --all -- --check
 
-  clippy-tests:
-    name: clippy & tests
+  clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: nightly
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          cache-on-failure: true
-      - name: clippy (deny warnings)
-        run: cargo clippy --all-features --all-targets -- -D warnings
-      - name: tests
-        run: cargo test --all-features --all-targets --no-fail-fast
+          toolchain: "nightly"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
