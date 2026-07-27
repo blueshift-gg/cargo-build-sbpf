@@ -1,13 +1,14 @@
-use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::{env, fs};
 
 use anyhow::{bail, Context, Result};
 use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 pub(crate) const TARGET: &str = "bpfel-unknown-none";
 const TARGET_RUSTFLAGS_ENV: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
+const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
 const BUILD_STD: &str = "build-std=core,alloc";
 
 pub(crate) const REQUIRED_RUSTFLAGS: &[&str] = &[
@@ -115,6 +116,21 @@ pub(crate) fn run_cargo_build(
             "using existing Cargo config at {}; not injecting SBPF rustflags",
             config_path.display()
         );
+
+        // Override arch in config.toml if selected arch is different.
+        let selected_arch = arch.linker_arg();
+        let mut config_rustflags = get_cargo_config_rustflags(&config_path)?;
+        if let Some(configured_arch) = config_rustflags
+            .iter_mut()
+            .find(|flag| rustflag_key(flag) == ("linker", "--arch"))
+            .filter(|configured| **configured != selected_arch)
+        {
+            eprintln!(
+                "arch is set to {selected_arch}, overriding {configured_arch} set in config.toml"
+            );
+            *configured_arch = selected_arch;
+            command.env(RUSTFLAGS_ENV, config_rustflags.join(" "));
+        }
     } else {
         command.env(TARGET_RUSTFLAGS_ENV, merged_target_rustflags(arch));
     }
@@ -126,6 +142,32 @@ pub(crate) fn run_cargo_build(
         .context("failed to run rustup run nightly cargo build")?;
 
     Ok(status.code().unwrap_or(1).try_into().unwrap_or(1))
+}
+
+pub(crate) fn get_cargo_config_rustflags(config_path: &Path) -> Result<Vec<String>> {
+    let config = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let doc = parse_config(&config)?;
+
+    let Some(rustflags) = doc
+        .get("target")
+        .and_then(|target| target.get(TARGET))
+        .and_then(|target| target.get("rustflags"))
+        .and_then(Item::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+
+    rustflags
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_owned).with_context(|| {
+                format!(
+                    "failed to parse Cargo config: `[target.{TARGET}].rustflags` must contain only strings"
+                )
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn ensure_recommended_cargo_config_in_content(
