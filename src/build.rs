@@ -8,7 +8,6 @@ use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 pub(crate) const TARGET: &str = "bpfel-unknown-none";
 const TARGET_RUSTFLAGS_ENV: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
-const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
 const BUILD_STD: &str = "build-std=core,alloc";
 
 pub(crate) const REQUIRED_RUSTFLAGS: &[&str] = &[
@@ -31,14 +30,15 @@ pub(crate) enum SbpfArch {
 }
 
 impl SbpfArch {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::V0 => "v0",
+            Self::V3 => "v3",
+        }
+    }
+
     fn linker_arg(self) -> String {
-        format!(
-            "link-arg=--arch={}",
-            match self {
-                Self::V0 => "v0",
-                Self::V3 => "v3",
-            }
-        )
+        format!("link-arg=--arch={}", self.as_str())
     }
 }
 
@@ -117,21 +117,6 @@ pub(crate) fn run_cargo_build(
             "using existing Cargo config at {}; not injecting SBPF rustflags",
             config_path.display()
         );
-
-        // Override arch in config.toml if selected arch is different.
-        let selected_arch = arch.linker_arg();
-        let mut config_rustflags = get_cargo_config_rustflags(&config_path)?;
-        if let Some(configured_arch) = config_rustflags
-            .iter_mut()
-            .find(|flag| rustflag_key(flag) == ("linker", "--arch"))
-            .filter(|configured| **configured != selected_arch)
-        {
-            eprintln!(
-                "arch is set to {selected_arch}, overriding {configured_arch} set in config.toml"
-            );
-            *configured_arch = selected_arch;
-            command.env(RUSTFLAGS_ENV, config_rustflags.join(" "));
-        }
     } else if generate_config {
         let cargo_dir = manifest_path
             .parent()
@@ -157,35 +142,6 @@ pub(crate) fn run_cargo_build(
         .context("failed to run rustup run nightly cargo build")?;
 
     Ok(status.code().unwrap_or(1).try_into().unwrap_or(1))
-}
-
-pub(crate) fn get_cargo_config_rustflags(
-    config_path: &Path,
-) -> Result<Vec<String>> {
-    let config = fs::read_to_string(config_path).with_context(|| {
-        format!("failed to read {}", config_path.display())
-    })?;
-    let doc = parse_config(&config)?;
-
-    let Some(rustflags) = doc
-        .get("target")
-        .and_then(|target| target.get(TARGET))
-        .and_then(|target| target.get("rustflags"))
-        .and_then(Item::as_array)
-    else {
-        return Ok(Vec::new());
-    };
-
-    rustflags
-        .iter()
-        .map(|value| {
-            value.as_str().map(str::to_owned).with_context(|| {
-                format!(
-                    "failed to parse Cargo config: `[target.{TARGET}].rustflags` must contain only strings"
-                )
-            })
-        })
-        .collect()
 }
 
 pub(crate) fn ensure_recommended_cargo_config_in_content(
@@ -257,10 +213,17 @@ fn rustflags_config_array(
         let key = rustflag_key(required);
         if key == ("linker", "--arch") {
             if let Some(existing) =
-                flags.iter_mut().find(|existing| rustflag_key(existing) == key)
+                flags.iter().find(|existing| rustflag_key(existing) == key)
             {
-                // Use the selected arch.
-                *existing = required.clone();
+                if existing != required {
+                    let configured_arch = existing
+                        .strip_prefix("link-arg=--arch=")
+                        .unwrap_or(existing);
+                    bail!(
+                        "sBPF architecture conflict: selected {}, but .cargo/config.toml configures {configured_arch}\nhelp: use --arch {configured_arch}, or update/remove {existing} from [target.{TARGET}].rustflags",
+                        arch.as_str()
+                    );
+                }
                 continue;
             }
         }
@@ -505,7 +468,7 @@ rustflags = [
     }
 
     #[test]
-    fn repairs_cargo_config_for_selected_arch() {
+    fn rejects_conflicting_cargo_config_arch() {
         let config = "\
 [unstable]
 build-std = [\"core\", \"alloc\"]
@@ -518,14 +481,14 @@ rustflags = [
 \"link-arg=--arch=v3\",
 ]
 ";
-        let updated =
+        let error =
             ensure_recommended_cargo_config_in_content(config, SbpfArch::V0)
-                .unwrap();
-        assert!(updated.contains("\"link-arg=--arch=v0\","));
-        assert!(!updated.contains("--arch=v3"));
-        assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
-            .unwrap()
-            .is_empty());
+                .unwrap_err()
+                .to_string();
+        assert_eq!(
+            error,
+            "sBPF architecture conflict: selected v0, but .cargo/config.toml configures v3\nhelp: use --arch v3, or update/remove link-arg=--arch=v3 from [target.bpfel-unknown-none].rustflags"
+        );
     }
 
     #[test]
