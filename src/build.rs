@@ -253,7 +253,7 @@ fn rustflags_config_array(
     }
 
     let rustflags = target_rustflags(arch);
-    for required in rustflags.chunks_exact(2).map(|pair| &pair[1]) {
+    for required in rustflags.as_chunks::<2>().0.iter().map(|pair| &pair[1]) {
         let key = rustflag_key(required);
         if key == ("linker", "--arch") {
             if let Some(existing) =
