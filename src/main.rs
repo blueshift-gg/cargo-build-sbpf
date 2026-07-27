@@ -23,7 +23,13 @@ fn main() -> ExitCode {
         }
 
         ensure_build_ready(&manifest_path, cli.diagnosis_config)?;
-        run_cargo_build(&manifest_path, &cli.build_args, cli.diagnosis_config.arch).map(Some)
+        run_cargo_build(
+            &manifest_path,
+            &cli.build_args,
+            cli.diagnosis_config.arch,
+            cli.generate_config,
+        )
+        .map(Some)
     })();
 
     match result {

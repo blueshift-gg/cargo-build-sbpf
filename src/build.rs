@@ -95,6 +95,7 @@ pub(crate) fn run_cargo_build(
     manifest_path: &Path,
     build_args: &[OsString],
     arch: SbpfArch,
+    generate_config: bool,
 ) -> Result<u8> {
     let mut command = Command::new("rustup");
     command.arg("run").arg("nightly").arg("cargo").arg("build");
@@ -131,6 +132,18 @@ pub(crate) fn run_cargo_build(
             *configured_arch = selected_arch;
             command.env(RUSTFLAGS_ENV, config_rustflags.join(" "));
         }
+    } else if generate_config {
+        let cargo_dir = manifest_path
+            .parent()
+            .context("manifest path has no parent directory")?
+            .join(".cargo");
+        let config_path = cargo_dir.join("config.toml");
+        fs::create_dir_all(&cargo_dir)
+            .with_context(|| format!("failed to create {}", cargo_dir.display()))?;
+        let config = ensure_recommended_cargo_config_in_content("", arch)?;
+        fs::write(&config_path, config)
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        eprintln!("generated Cargo config at {}", config_path.display());
     } else {
         command.env(TARGET_RUSTFLAGS_ENV, merged_target_rustflags(arch));
     }
@@ -185,10 +198,11 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     };
     unstable["build-std"] = value(Array::from_iter(["core", "alloc"]));
 
-    let target = doc
-        .as_table_mut()
-        .entry("target")
-        .or_insert_with(|| Item::Table(Table::new()));
+    let target = doc.as_table_mut().entry("target").or_insert_with(|| {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        Item::Table(table)
+    });
     let Some(target) = target.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target]` must be a table");
     };
