@@ -10,6 +10,7 @@ use crate::diagnose::DiagnosisConfig;
 pub(crate) struct Cli {
     pub(crate) diagnosis_config: DiagnosisConfig,
     pub(crate) diagnose: bool,
+    pub(crate) generate_config: bool,
     pub(crate) build_args: Vec<OsString>,
 }
 
@@ -54,6 +55,9 @@ struct Args {
     )]
     skip_builtins_check: bool,
 
+    #[arg(long, hide = true)]
+    generate_config: bool,
+
     #[arg(value_name = "CARGO_BUILD_ARGS", allow_hyphen_values = true, num_args = 0..)]
     build_args: Vec<OsString>,
 }
@@ -77,6 +81,7 @@ pub(crate) fn parse_cli(mut args: Vec<OsString>) -> Result<Option<Cli>> {
                 skip_builtins_check: args.skip_builtins_check,
             },
             diagnose: args.diagnose,
+            generate_config: args.generate_config,
             build_args: args.build_args,
         })),
         Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {

@@ -1,7 +1,7 @@
-use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::{env, fs};
 
 use anyhow::{bail, Context, Result};
 use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
@@ -30,14 +30,15 @@ pub(crate) enum SbpfArch {
 }
 
 impl SbpfArch {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::V0 => "v0",
+            Self::V3 => "v3",
+        }
+    }
+
     fn linker_arg(self) -> String {
-        format!(
-            "link-arg=--arch={}",
-            match self {
-                Self::V0 => "v0",
-                Self::V3 => "v3",
-            }
-        )
+        format!("link-arg=--arch={}", self.as_str())
     }
 }
 
@@ -94,6 +95,7 @@ pub(crate) fn run_cargo_build(
     manifest_path: &Path,
     build_args: &[OsString],
     arch: SbpfArch,
+    generate_config: bool,
 ) -> Result<u8> {
     let mut command = Command::new("rustup");
     command.arg("run").arg("nightly").arg("cargo").arg("build");
@@ -115,6 +117,20 @@ pub(crate) fn run_cargo_build(
             "using existing Cargo config at {}; not injecting SBPF rustflags",
             config_path.display()
         );
+    } else if generate_config {
+        let cargo_dir = manifest_path
+            .parent()
+            .context("manifest path has no parent directory")?
+            .join(".cargo");
+        let config_path = cargo_dir.join("config.toml");
+        fs::create_dir_all(&cargo_dir).with_context(|| {
+            format!("failed to create {}", cargo_dir.display())
+        })?;
+        let config = ensure_recommended_cargo_config_in_content("", arch)?;
+        fs::write(&config_path, config).with_context(|| {
+            format!("failed to write {}", config_path.display())
+        })?;
+        eprintln!("generated Cargo config at {}", config_path.display());
     } else {
         command.env(TARGET_RUSTFLAGS_ENV, merged_target_rustflags(arch));
     }
@@ -143,10 +159,11 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     };
     unstable["build-std"] = value(Array::from_iter(["core", "alloc"]));
 
-    let target = doc
-        .as_table_mut()
-        .entry("target")
-        .or_insert_with(|| Item::Table(Table::new()));
+    let target = doc.as_table_mut().entry("target").or_insert_with(|| {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        Item::Table(table)
+    });
     let Some(target) = target.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target]` must be a table");
     };
@@ -155,21 +172,110 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
     let Some(target_table) = target_table.as_table_mut() else {
         bail!("failed to parse Cargo config: `[target.{TARGET}]` must be a table");
     };
-    target_table["rustflags"] = rustflags_config_array(arch);
+    let existing_rustflags = target_table
+        .get("rustflags")
+        .map(|item| {
+            item.as_array().with_context(|| {
+                format!(
+                    "failed to parse Cargo config: `[target.{TARGET}].rustflags` must be an array"
+                )
+            })
+        })
+        .transpose()?;
+    let rustflags = rustflags_config_array(existing_rustflags, arch)?;
+    target_table["rustflags"] = rustflags;
 
     Ok(doc.to_string())
 }
 
-fn rustflags_config_array(arch: SbpfArch) -> Item {
+fn rustflags_config_array(
+    existing: Option<&Array>,
+    arch: SbpfArch,
+) -> Result<Item> {
+    let mut flags = Vec::new();
+    if let Some(existing) = existing {
+        for value in existing.iter() {
+            flags.push(
+                value
+                    .as_str()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse Cargo config: `[target.{TARGET}].rustflags` must contain only strings"
+                        )
+                    })?
+                    .to_owned(),
+            );
+        }
+    }
+
+    let rustflags = target_rustflags(arch);
+    for required in rustflags.as_chunks::<2>().0.iter().map(|pair| &pair[1]) {
+        let key = rustflag_key(required);
+        if key == ("linker", "--arch") {
+            if let Some(existing) =
+                flags.iter().find(|existing| rustflag_key(existing) == key)
+            {
+                if existing != required {
+                    let configured_arch = existing
+                        .strip_prefix("link-arg=--arch=")
+                        .unwrap_or(existing);
+                    bail!(
+                        "sBPF architecture conflict: selected {}, but .cargo/config.toml configures {configured_arch}\nhelp: use --arch {configured_arch}, or update/remove {existing} from [target.{TARGET}].rustflags",
+                        arch.as_str()
+                    );
+                }
+                continue;
+            }
+        }
+
+        if let Some(conflicting) = flags.iter().find(|existing| {
+            rustflag_key(existing) == key && *existing != required
+        }) {
+            if matches!(
+                key,
+                ("rustc", "linker" | "panic" | "relocation-model")
+            ) {
+                bail!(
+                    "conflicting rustflag: config contains `{conflicting}`, but cargo-build-sbpf requires `{required}`"
+                );
+            }
+
+            // --export is appendable so preserve its value without producing conflict.
+            if key != ("linker", "--export") {
+                continue;
+            }
+        }
+
+        if !flags.iter().any(|existing| existing == required) {
+            flags.push("-C".to_string());
+            flags.push(required.clone());
+        }
+    }
+
     let mut array = Array::default();
-    for flag in target_rustflags(arch) {
+    for flag in flags {
         let mut value = Value::from(flag);
         value.decor_mut().set_prefix("\n    ");
         array.push_formatted(value);
     }
     array.set_trailing("\n");
     array.set_trailing_comma(true);
-    value(array)
+    Ok(value(array))
+}
+
+// Returns the (namespace, name) key for the given flag
+// Example: link-arg=--arch=v3 returns ("linker", "--arch")
+pub(crate) fn rustflag_key(flag: &str) -> (&'static str, &str) {
+    let (namespace, flag) =
+        if let Some(flag) = flag.strip_prefix("link-arg=--llvm-args=") {
+            ("llvm", flag)
+        } else if let Some(flag) = flag.strip_prefix("link-arg=") {
+            ("linker", flag)
+        } else {
+            ("rustc", flag)
+        };
+    let name = flag.split_once('=').map_or(flag, |(name, _)| name);
+    (namespace, name)
 }
 
 pub(crate) fn find_cargo_config(manifest_path: &Path) -> Option<PathBuf> {
@@ -332,6 +438,10 @@ mod tests {
 rustflags = [
 \"-C\",
 \"linker=sbpf-linker\",
+\"-C\",
+\"lto=off\",
+\"-C\",
+\"link-arg=--dump-module=llvm_dump\",
 ]
 ";
         let updated =
@@ -347,13 +457,18 @@ rustflags = [
         {
             assert!(updated.contains(&flag), "missing {flag}");
         }
+
+        // existing flags should be preserved
+        assert!(updated.contains("\"lto=off\""));
+        assert!(updated.contains("\"link-arg=--dump-module=llvm_dump\""));
+
         assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
             .unwrap()
             .is_empty());
     }
 
     #[test]
-    fn repairs_cargo_config_for_selected_arch() {
+    fn rejects_conflicting_cargo_config_arch() {
         let config = "\
 [unstable]
 build-std = [\"core\", \"alloc\"]
@@ -366,13 +481,61 @@ rustflags = [
 \"link-arg=--arch=v3\",
 ]
 ";
-        let updated =
+        let error =
             ensure_recommended_cargo_config_in_content(config, SbpfArch::V0)
+                .unwrap_err()
+                .to_string();
+        assert_eq!(
+            error,
+            "sBPF architecture conflict: selected v0, but .cargo/config.toml configures v3\nhelp: use --arch v3, or update/remove link-arg=--arch=v3 from [target.bpfel-unknown-none].rustflags"
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_cargo_config_flags() {
+        for (existing, required) in [
+            ("linker=custom-linker", "linker=sbpf-linker"),
+            ("panic=unwind", "panic=abort"),
+            ("relocation-model=pic", "relocation-model=static"),
+        ] {
+            let config = format!(
+                "[target.{TARGET}]\nrustflags = [\"-C\", \"{existing}\"]\n"
+            );
+            let error = ensure_recommended_cargo_config_in_content(
+                &config,
+                SbpfArch::V3,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("conflicting rustflag"));
+            assert!(error.contains(existing));
+            assert!(error.contains(required));
+        }
+    }
+
+    #[test]
+    fn appends_exports_and_preserves_existing_recommended_values() {
+        let config = "\
+[target.bpfel-unknown-none]
+rustflags = [
+\"-C\",
+\"link-arg=--export=custom_symbol\",
+\"-C\",
+\"link-arg=--llvm-args=--bpf-max-stores-per-memfunc=10\",
+]
+";
+        let updated =
+            ensure_recommended_cargo_config_in_content(config, SbpfArch::V3)
                 .unwrap();
-        assert!(updated.contains("\"link-arg=--arch=v0\","));
-        assert!(!updated.contains("--arch=v3"));
-        assert!(crate::diagnose::missing_cargo_config_requirements(&updated)
-            .unwrap()
-            .is_empty());
+        // existing export should be preserved
+        assert!(updated.contains("link-arg=--export=custom_symbol"));
+        assert!(updated.contains("link-arg=--export=__multi3"));
+        // existing recommended option should be preserved
+        assert!(updated
+            .contains("link-arg=--llvm-args=--bpf-max-stores-per-memfunc=10"));
+        assert!(!updated
+            .contains("link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5"));
+        // missing recommended option should be added
+        assert!(updated.contains("link-arg=--llvm-args=--disable-gotox"));
     }
 }

@@ -28,6 +28,7 @@ fn main() -> ExitCode {
             &manifest_path,
             &cli.build_args,
             cli.diagnosis_config.arch,
+            cli.generate_config,
         )
         .map(Some)
     })();
