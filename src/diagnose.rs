@@ -14,6 +14,7 @@ use crate::build::{
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
 const BUILTINS_GIT: &str =
     "https://github.com/blueshift-gg/solana-compiler-builtins";
+const SBPF_LINKER_GIT: &str = "https://github.com/blueshift-gg/sbpf-linker";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
@@ -141,15 +142,28 @@ fn collect_issues(
         });
     }
 
-    if which::which("sbpf-linker").is_err() {
-        issues.push(Issue {
+    match which::which("sbpf-linker") {
+        Err(_) => issues.push(Issue {
             severity: Severity::Required,
             check: "sbpf-linker",
             reason:
                 "`sbpf-linker` was not found on PATH, so the final SBPF artifact cannot be linked"
                     .to_string(),
             fix: Fix::InstallSbpfLinker,
-        });
+        }),
+        Ok(path) => {
+            if let Err(reason) = probe_sbpf_linker(&path) {
+                issues.push(Issue {
+                    severity: Severity::Required,
+                    check: "sbpf-linker",
+                    reason: format!(
+                        "`sbpf-linker` at {} {reason}",
+                        path.display()
+                    ),
+                    fix: Fix::InstallSbpfLinker,
+                });
+            }
+        }
     }
 
     if !config.skip_builtins_check
@@ -376,6 +390,66 @@ fn nightly_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn probe_sbpf_linker(path: &Path) -> Result<()> {
+    let version_output =
+        Command::new(path).arg("--version").output().with_context(|| {
+            format!("failed to query {} for its version", path.display())
+        })?;
+    // Some published builds print their version but return a failure status.
+    let version = parse_reported_version(
+        &version_output.stdout,
+        &version_output.stderr,
+        "sbpf-linker ",
+    );
+    let llvm_version = parse_reported_version(
+        &version_output.stdout,
+        &version_output.stderr,
+        "LLVM ",
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "does not report its loaded LLVM version; install the compatible Git version"
+        )
+    })?;
+
+    let capability_probe = Command::new(path)
+        .arg("--arch=v3")
+        .arg("--version")
+        .output()
+        .with_context(|| {
+            format!("failed to query {} for `--arch` support", path.display())
+        })?;
+    if capability_probe.status.success() {
+        return Ok(());
+    }
+
+    let version = version.map_or_else(
+        || "has an unrecognized version".to_string(),
+        |version| format!("reports version {version}"),
+    );
+    bail!(
+        "{version} and loads LLVM {llvm_version}, but does not support the required `--arch` option; install the compatible Git version"
+    )
+}
+
+fn parse_reported_version(
+    stdout: &[u8],
+    stderr: &[u8],
+    name: &str,
+) -> Option<String> {
+    [stdout, stderr]
+        .into_iter()
+        .filter_map(|output| std::str::from_utf8(output).ok())
+        .flat_map(str::lines)
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(name)
+                .map(str::trim)
+                .filter(|version| !version.is_empty())
+                .map(str::to_owned)
+        })
+}
+
 fn install_nightly() -> Result<()> {
     eprintln!("installing nightly toolchain");
     let status = Command::new("rustup")
@@ -397,6 +471,9 @@ fn install_sbpf_linker() -> Result<()> {
     let status = Command::new(cargo_bin())
         .arg("install")
         .arg("sbpf-linker")
+        .arg("--git")
+        .arg(SBPF_LINKER_GIT)
+        .arg("--force")
         .status()
         .context("failed to run cargo install sbpf-linker")?;
 
@@ -410,6 +487,23 @@ fn install_sbpf_linker() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_reported_linker_versions() {
+        let output = b"sbpf-linker 0.1.9\nLLVM 21.1.8\n";
+        assert_eq!(
+            parse_reported_version(output, b"", "sbpf-linker "),
+            Some("0.1.9".to_string())
+        );
+        assert_eq!(
+            parse_reported_version(output, b"", "LLVM "),
+            Some("21.1.8".to_string())
+        );
+        assert_eq!(
+            parse_reported_version(b"custom build\n", b"", "LLVM "),
+            None
+        );
+    }
 
     #[test]
     fn dependency_tree_excludes_builtins_for_this_crate() {

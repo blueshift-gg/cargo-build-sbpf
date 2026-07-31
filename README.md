@@ -18,7 +18,8 @@ The default is `v3`.
 Before building, the subcommand checks:
 
 - `nightly` is available through rustup,
-- `sbpf-linker` is on `PATH`,
+- a compatible `sbpf-linker` is on `PATH` (reports its loaded LLVM version and
+  supports `--arch`),
 - `solana-compiler-builtins` is present in the `bpfel-unknown-none`
   normal/build dependency tree,
 - an existing `.cargo/config.toml` (if any) has the required SBPF rustflags.
