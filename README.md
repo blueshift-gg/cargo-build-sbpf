@@ -15,6 +15,20 @@ cargo build-sbpf --arch v3
 
 The default is `v3`.
 
+### sbpf-linker compatibility
+
+The current `sbpf-linker` release on crates.io is not yet compatible with
+`cargo-build-sbpf`. For now, install an LLVM-main build from the
+[sbpf-linker repository](https://github.com/blueshift-gg/sbpf-linker):
+
+```sh
+git clone https://github.com/blueshift-gg/sbpf-linker
+cd sbpf-linker
+cargo install-with-llvm-main
+```
+
+This experimental installation downloads and builds LLVM locally.
+
 Before building, the subcommand checks:
 
 - `nightly` is available through rustup,
