@@ -8,6 +8,7 @@ repository = "https://github.com/blueshift-gg/cargo-build-sbpf"
 authors = ["Claire Fan <claire@blueshift.gg>"]
 rust-version = "1.90"
 readme = "README.md"
+exclude = ["tests"]
 keywords = ["solana", "bpf", "sbpf", "cargo", "build"]
 categories = ["development-tools", "command-line-utilities"]
 

@@ -1,0 +1,22 @@
+[package]
+name = "stack_args_six"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A six-argument call, whose sixth argument spills to the stack and needs LLVM 23"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dev-dependencies]
+mollusk-svm = "0.14.0"
+solana-instruction = "3.4.0"
+solana-pubkey = "4.1.0"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+
+[workspace]
+
+

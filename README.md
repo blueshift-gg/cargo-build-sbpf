@@ -54,3 +54,21 @@ Add `--auto-fix` to apply all available fixes without prompting:
 ```sh
 cargo build-sbpf --diagnose --auto-fix
 ```
+
+## Verifying your setup
+
+Three small SBPF programs live under `tests`. Building one checks that the
+toolchain works end to end, and its mollusk test locks down the compute unit
+cost, which catches a toolchain that compiles but lowers the code badly:
+
+```sh
+cargo install --path .
+cd tests/input_loads
+cargo build-sbpf
+cargo test
+```
+
+The same works in `tests/const_rodata` and `tests/stack_args_six`, which needs
+LLVM 23 and otherwise fails with `stack arguments are not supported`. Builds
+always use nightly, so the version that matters is
+`rustc +nightly -vV | grep LLVM`.
