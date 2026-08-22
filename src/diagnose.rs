@@ -7,8 +7,8 @@ use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
     cargo_bin, ensure_recommended_cargo_config_in_content, find_cargo_config,
-    parse_config, rustflag_key, SbpfArch, RECOMMENDED_RUSTFLAGS,
-    REQUIRED_RUSTFLAGS, TARGET,
+    installed_cargo_binary, parse_config, rustflag_key, SbpfArch,
+    RECOMMENDED_RUSTFLAGS, REQUIRED_RUSTFLAGS, TARGET,
 };
 
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
@@ -141,12 +141,12 @@ fn collect_issues(
         });
     }
 
-    if which::which("sbpf-linker").is_err() {
+    if !sbpf_linker_uses_llvm_23() {
         issues.push(Issue {
             severity: Severity::Required,
-            check: "sbpf-linker",
+            check: "sbpf-linker (LLVM 23)",
             reason:
-                "`sbpf-linker` was not found on PATH, so the final SBPF artifact cannot be linked"
+                "`sbpf-linker` with LLVM 23 was not found on PATH or in Cargo's bin directory, so the final SBPF artifact cannot be linked with the required LLVM version"
                     .to_string(),
             fix: Fix::InstallSbpfLinker,
         });
@@ -393,18 +393,73 @@ fn install_nightly() -> Result<()> {
 }
 
 fn install_sbpf_linker() -> Result<()> {
+    if installed_cargo_binary("cargo-binstall").is_none() {
+        eprintln!("updating stable Rust toolchain for cargo-binstall");
+        let status = Command::new("rustup")
+            .arg("update")
+            .arg("stable")
+            .status()
+            .context("failed to run rustup update stable")?;
+
+        if !status.success() {
+            bail!("rustup update stable failed with status {status}");
+        }
+
+        eprintln!("installing cargo-binstall");
+        let status = Command::new("rustup")
+            .arg("run")
+            .arg("stable")
+            .arg("cargo")
+            .arg("install")
+            .arg("cargo-binstall")
+            .arg("--locked")
+            .status()
+            .context("failed to run cargo install cargo-binstall")?;
+
+        if !status.success() {
+            bail!("cargo install cargo-binstall failed with status {status}");
+        }
+    }
+
     eprintln!("installing sbpf-linker");
-    let status = Command::new(cargo_bin())
-        .arg("install")
+    let cargo_binstall = installed_cargo_binary("cargo-binstall")
+        .context("cargo-binstall was installed but could not be located")?;
+    let status = Command::new(cargo_binstall)
         .arg("sbpf-linker")
+        .arg("--no-confirm")
+        .arg("--force")
         .status()
-        .context("failed to run cargo install sbpf-linker")?;
+        .context("failed to run cargo binstall sbpf-linker")?;
 
     if status.success() {
         Ok(())
     } else {
-        bail!("cargo install sbpf-linker failed with status {status}");
+        bail!("cargo binstall sbpf-linker failed with status {status}");
     }
+}
+
+fn sbpf_linker_uses_llvm_23() -> bool {
+    let Some(linker) = installed_cargo_binary("sbpf-linker") else {
+        return false;
+    };
+    let Ok(output) = Command::new(linker).arg("--version").output() else {
+        return false;
+    };
+
+    output.status.success()
+        && (version_reports_llvm_23(&String::from_utf8_lossy(&output.stdout))
+            || version_reports_llvm_23(&String::from_utf8_lossy(
+                &output.stderr,
+            )))
+}
+
+fn version_reports_llvm_23(version: &str) -> bool {
+    version.lines().any(|line| {
+        line.trim()
+            .strip_prefix("LLVM ")
+            .and_then(|version| version.split('.').next())
+            == Some("23")
+    })
 }
 
 #[cfg(test)]

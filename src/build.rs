@@ -100,6 +100,21 @@ pub(crate) fn run_cargo_build(
     let mut command = Command::new("rustup");
     command.arg("run").arg("nightly").arg("cargo").arg("build");
 
+    if let Some(linker) = installed_cargo_binary("sbpf-linker") {
+        let linker_dir = linker
+            .parent()
+            .context("resolved sbpf-linker path has no parent directory")?;
+        let mut search_paths = vec![linker_dir.to_path_buf()];
+        if let Some(path) = env::var_os("PATH") {
+            search_paths.extend(env::split_paths(&path));
+        }
+        command.env(
+            "PATH",
+            env::join_paths(search_paths)
+                .context("failed to add sbpf-linker directory to PATH")?,
+        );
+    }
+
     if !has_release_or_profile(build_args) {
         command.arg("--release");
     }
@@ -363,6 +378,31 @@ fn merged_target_rustflags(arch: SbpfArch) -> String {
 
 pub(crate) fn cargo_bin() -> OsString {
     env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
+
+pub(crate) fn installed_cargo_binary(name: &str) -> Option<PathBuf> {
+    which::which(name).ok().or_else(|| {
+        let cargo_home = env::var_os("CARGO_HOME")
+            .filter(|cargo_home| !cargo_home.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var_os("HOME")
+                    .or_else(|| env::var_os("USERPROFILE"))
+                    .map(|home| PathBuf::from(home).join(".cargo"))
+            })?;
+        let cargo_home = if cargo_home.is_absolute() {
+            cargo_home
+        } else {
+            env::current_dir().ok()?.join(cargo_home)
+        };
+        cargo_home_binary(name, &cargo_home)
+    })
+}
+
+fn cargo_home_binary(name: &str, cargo_home: &Path) -> Option<PathBuf> {
+    let bin_dir = cargo_home.join("bin");
+    which::which_in(name, Some(bin_dir.as_os_str()), env::current_dir().ok()?)
+        .ok()
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<DocumentMut> {

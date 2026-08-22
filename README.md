@@ -18,7 +18,7 @@ The default is `v3`.
 Before building, the subcommand checks:
 
 - `nightly` is available through rustup,
-- `sbpf-linker` is on `PATH`,
+- `sbpf-linker` built with LLVM 23 is on `PATH` or in `$CARGO_HOME/bin`,
 - `solana-compiler-builtins` is present in the `bpfel-unknown-none`
   normal/build dependency tree,
 - an existing `.cargo/config.toml` (if any) has the required SBPF rustflags.
@@ -29,6 +29,14 @@ explanation. The command then runs the equivalent of
 `cargo +nightly build --release --target bpfel-unknown-none -Z build-std=core,alloc`,
 applying the target-specific SBPF rustflags normally placed in
 `.cargo/config.toml`, unless a Cargo config already exists for the package.
+
+When a compatible `sbpf-linker` is missing, the automatic fix runs
+`cargo binstall sbpf-linker --no-confirm --force` so the linker can be
+installed from a prebuilt release instead of compiled locally. If
+`cargo-binstall` is already available, it is reused; otherwise the fix updates
+the stable Rust toolchain and installs `cargo-binstall` with that toolchain
+first. Cargo-installed tools do not need to be exported on the user's `PATH`;
+the linker directory is added to the SBPF build subprocess automatically.
 
 If your project supplies its own compiler builtins, skip that check:
 
