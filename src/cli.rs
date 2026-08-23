@@ -45,7 +45,7 @@ struct Args {
     #[arg(
         long = "auto-fix",
         requires = "diagnose",
-        help = "With --diagnose, apply available fixes without prompting"
+        help = "With --diagnose, apply available fixes; mutating external commands require confirmation"
     )]
     auto_fix: bool,
 

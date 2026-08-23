@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
+use dialoguer::Confirm;
+use rustc_version::{Version, VersionMeta};
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::build::{
@@ -14,6 +16,7 @@ use crate::build::{
 const BUILTINS_CRATE: &str = "solana-compiler-builtins";
 const BUILTINS_GIT: &str =
     "https://github.com/blueshift-gg/solana-compiler-builtins";
+const MIN_SBPF_LINKER_VERSION: Version = Version::new(0, 2, 1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
@@ -24,6 +27,7 @@ pub(crate) enum Severity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Fix {
     InstallNightly,
+    UpdateNightly,
     InstallSbpfLinker,
     AddCompilerBuiltins,
     EnsureCargoConfig(PathBuf),
@@ -103,7 +107,7 @@ pub(crate) fn ensure_build_ready(
     }
 
     eprintln!(
-        "==> SBPF build found {} required issue(s); auto-fixing:",
+        "==> SBPF build found {} required issue(s); fixes require confirmation:",
         required.len()
     );
     for issue in &required {
@@ -132,21 +136,35 @@ fn collect_issues(
 ) -> Result<Vec<Issue>> {
     let mut issues = Vec::new();
 
-    if !nightly_available() {
-        issues.push(Issue {
+    match nightly_rustc_metadata() {
+        None => issues.push(Issue {
             severity: Severity::Required,
             check: "nightly toolchain",
             reason: "rustup cannot run the `nightly` toolchain, but SBPF builds require upstream nightly for `-Z build-std`".to_string(),
             fix: Fix::InstallNightly,
-        });
+        }),
+        Some(metadata)
+            if metadata
+                .llvm_version
+                .as_ref()
+                .is_none_or(|version| version.major != 23) =>
+        {
+            issues.push(Issue {
+                severity: Severity::Recommended,
+                check: "nightly LLVM 23",
+                reason: "the `nightly` rustc does not use LLVM 23; run `rustup update nightly` to use the recommended LLVM version".to_string(),
+                fix: Fix::UpdateNightly,
+            });
+        }
+        Some(_) => {}
     }
 
-    if !sbpf_linker_uses_llvm_23() {
+    if !sbpf_linker_meets_minimum_version() {
         issues.push(Issue {
             severity: Severity::Required,
-            check: "sbpf-linker (LLVM 23)",
+            check: "sbpf-linker 0.2.1 or newer",
             reason:
-                "`sbpf-linker` with LLVM 23 was not found on PATH or in Cargo's bin directory, so the final SBPF artifact cannot be linked with the required LLVM version"
+                "`sbpf-linker` 0.2.1 or newer was not found on PATH or in Cargo's bin directory, so the final SBPF artifact cannot be linked with LLVM 23"
                     .to_string(),
             fix: Fix::InstallSbpfLinker,
         });
@@ -219,6 +237,10 @@ fn dependency_tree_contains_builtins(manifest_path: &Path) -> Result<bool> {
 }
 
 fn add_compiler_builtins(manifest_path: &Path) -> Result<()> {
+    request_permission(&format!(
+        "cargo add {BUILTINS_CRATE} --git {BUILTINS_GIT} --manifest-path {}",
+        manifest_path.display()
+    ))?;
     eprintln!(
         "adding {BUILTINS_CRATE} from {BUILTINS_GIT} to {}",
         manifest_path.display()
@@ -339,6 +361,7 @@ fn ensure_recommended_cargo_config(
 fn apply_fix(manifest_path: &Path, fix: &Fix, arch: SbpfArch) -> Result<()> {
     match fix {
         Fix::InstallNightly => install_nightly(),
+        Fix::UpdateNightly => update_nightly(),
         Fix::InstallSbpfLinker => install_sbpf_linker(),
         Fix::AddCompilerBuiltins => add_compiler_builtins(manifest_path),
         Fix::EnsureCargoConfig(path) => {
@@ -364,19 +387,27 @@ fn print_issues(issues: &[Issue]) {
     }
 }
 
-fn nightly_available() -> bool {
-    Command::new("rustup")
-        .arg("run")
-        .arg("nightly")
-        .arg("rustc")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+fn nightly_rustc_metadata() -> Option<VersionMeta> {
+    let mut command = Command::new("rustup");
+    command.arg("run").arg("nightly").arg("rustc");
+    VersionMeta::for_command(command).ok()
+}
+
+fn request_permission(command: &str) -> Result<()> {
+    if Confirm::new()
+        .with_prompt(format!("Run `{command}`?"))
+        .default(false)
+        .interact()
+        .context("failed to request permission")?
+    {
+        Ok(())
+    } else {
+        bail!("not running `{command}` without permission");
+    }
 }
 
 fn install_nightly() -> Result<()> {
+    request_permission("rustup toolchain install nightly")?;
     eprintln!("installing nightly toolchain");
     let status = Command::new("rustup")
         .arg("toolchain")
@@ -392,8 +423,34 @@ fn install_nightly() -> Result<()> {
     }
 }
 
+fn update_nightly() -> Result<()> {
+    request_permission("rustup update nightly")?;
+    eprintln!("updating nightly toolchain");
+    let status = Command::new("rustup")
+        .arg("update")
+        .arg("nightly")
+        .status()
+        .context("failed to run rustup update nightly")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("rustup update nightly failed with status {status}");
+    }
+}
+
 fn install_sbpf_linker() -> Result<()> {
-    if installed_cargo_binary("cargo-binstall").is_none() {
+    let install_cargo_binstall =
+        installed_cargo_binary("cargo-binstall").is_none();
+    if install_cargo_binstall {
+        request_permission("rustup update stable")?;
+        request_permission(
+            "rustup run stable cargo install cargo-binstall --locked",
+        )?;
+    }
+    request_permission("cargo binstall sbpf-linker --no-confirm --force")?;
+
+    if install_cargo_binstall {
         eprintln!("updating stable Rust toolchain for cargo-binstall");
         let status = Command::new("rustup")
             .arg("update")
@@ -438,7 +495,7 @@ fn install_sbpf_linker() -> Result<()> {
     }
 }
 
-fn sbpf_linker_uses_llvm_23() -> bool {
+fn sbpf_linker_meets_minimum_version() -> bool {
     let Some(linker) = installed_cargo_binary("sbpf-linker") else {
         return false;
     };
@@ -447,18 +504,18 @@ fn sbpf_linker_uses_llvm_23() -> bool {
     };
 
     output.status.success()
-        && (version_reports_llvm_23(&String::from_utf8_lossy(&output.stdout))
-            || version_reports_llvm_23(&String::from_utf8_lossy(
-                &output.stderr,
-            )))
+        && sbpf_linker_version_is_compatible(&String::from_utf8_lossy(
+            &output.stdout,
+        ))
 }
 
-fn version_reports_llvm_23(version: &str) -> bool {
-    version.lines().any(|line| {
+fn sbpf_linker_version_is_compatible(output: &str) -> bool {
+    output.lines().any(|line| {
         line.trim()
-            .strip_prefix("LLVM ")
-            .and_then(|version| version.split('.').next())
-            == Some("23")
+            .strip_prefix("sbpf-linker ")
+            .and_then(|version| version.split_whitespace().next())
+            .and_then(|version| Version::parse(version).ok())
+            .is_some_and(|version| version >= MIN_SBPF_LINKER_VERSION)
     })
 }
 

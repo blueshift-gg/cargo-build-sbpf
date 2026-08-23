@@ -17,20 +17,23 @@ The default is `v3`.
 
 Before building, the subcommand checks:
 
-- `nightly` is available through rustup,
-- `sbpf-linker` built with LLVM 23 is on `PATH` or in `$CARGO_HOME/bin`,
+- `nightly` is available through rustup and preferably uses LLVM 23,
+- `sbpf-linker` 0.2.1 or newer is on `PATH` or in `$CARGO_HOME/bin`,
 - `solana-compiler-builtins` is present in the `bpfel-unknown-none`
   normal/build dependency tree,
 - an existing `.cargo/config.toml` (if any) has the required SBPF rustflags.
 
-Each of these is required. If an issue has an automatic fix, the build
-applies it and prints what changed; otherwise the build stops with an
+The nightly LLVM version is recommended; the other checks are required. When a
+required issue has an available fix, the build offers to apply it and asks for
+permission before running any external command that changes the
+toolchain, installed binaries, or manifest; otherwise the build stops with an
 explanation. The command then runs the equivalent of
 `cargo +nightly build --release --target bpfel-unknown-none -Z build-std=core,alloc`,
 applying the target-specific SBPF rustflags normally placed in
 `.cargo/config.toml`, unless a Cargo config already exists for the package.
 
-When a compatible `sbpf-linker` is missing, the automatic fix runs
+When `sbpf-linker` 0.2.1 or newer is missing, the available fix asks for
+permission before running
 `cargo binstall sbpf-linker --no-confirm --force` so the linker can be
 installed from a prebuilt release instead of compiled locally. If
 `cargo-binstall` is already available, it is reused; otherwise the fix updates
@@ -57,7 +60,8 @@ cargo build-sbpf --diagnose
 
 `--diagnose` runs the same checks as a normal build, plus the recommended
 tuning-flag checks, but only reports issues by default — nothing is modified.
-Add `--auto-fix` to apply all available fixes without prompting:
+Add `--auto-fix` to apply all available fixes. External commands that change
+the toolchain, installed binaries, or manifest still require confirmation:
 
 ```sh
 cargo build-sbpf --diagnose --auto-fix
