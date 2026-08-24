@@ -28,6 +28,7 @@ fn main() -> ExitCode {
             &manifest_path,
             &cli.build_args,
             cli.diagnosis_config.arch,
+            cli.simd_0460,
             cli.generate_config,
         )
         .map(Some)

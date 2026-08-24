@@ -188,7 +188,11 @@ fn collect_issues(
             fs::read_to_string(&config_path).with_context(|| {
                 format!("failed to read {}", config_path.display())
             })?;
-        ensure_recommended_cargo_config_in_content(&config_text, config.arch)?;
+        ensure_recommended_cargo_config_in_content(
+            &config_text,
+            config.arch,
+            false,
+        )?;
         for (severity, flag) in
             missing_cargo_config_requirements(&config_text)?
         {
@@ -343,7 +347,8 @@ fn ensure_recommended_cargo_config(
     let config = fs::read_to_string(config_path).with_context(|| {
         format!("failed to read {}", config_path.display())
     })?;
-    let updated = ensure_recommended_cargo_config_in_content(&config, arch)?;
+    let updated =
+        ensure_recommended_cargo_config_in_content(&config, arch, false)?;
     if updated != config {
         // Create a backup of the existing config.
         let backup_path = config_path.with_file_name("config.backup.toml");
@@ -546,6 +551,10 @@ rustflags = [
 \"relocation-model=static\",
 \"-C\",
 \"link-arg=--export=__multi3\",
+\"-C\",
+\"link-arg=--arch=v3\",
+\"-C\",
+\"link-arg=--llvm-args=-bpf-stack-size=4096\",
 ]
 ";
         let diagnosis = missing_cargo_config_requirements(config).unwrap();

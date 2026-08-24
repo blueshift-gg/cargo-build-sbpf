@@ -9,6 +9,8 @@ use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 pub(crate) const TARGET: &str = "bpfel-unknown-none";
 const TARGET_RUSTFLAGS_ENV: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
 const BUILD_STD: &str = "build-std=core,alloc";
+const STACK_FRAME_SIZE: u32 = 4096;
+const V0_STACK_FRAME_SIZE: u32 = STACK_FRAME_SIZE * 2;
 
 pub(crate) const REQUIRED_RUSTFLAGS: &[&str] = &[
     "linker=sbpf-linker",
@@ -37,8 +39,21 @@ impl SbpfArch {
         }
     }
 
-    fn linker_arg(self) -> String {
-        format!("link-arg=--arch={}", self.as_str())
+    fn stack_frame_size(self, simd_0460: bool) -> u32 {
+        match (self, simd_0460) {
+            (Self::V0, false) => V0_STACK_FRAME_SIZE,
+            _ => STACK_FRAME_SIZE,
+        }
+    }
+
+    fn linker_args(self, simd_0460: bool) -> [String; 2] {
+        [
+            format!("link-arg=--arch={}", self.as_str()),
+            format!(
+                "link-arg=--llvm-args=-bpf-stack-size={}",
+                self.stack_frame_size(simd_0460)
+            ),
+        ]
     }
 }
 
@@ -95,6 +110,7 @@ pub(crate) fn run_cargo_build(
     manifest_path: &Path,
     build_args: &[OsString],
     arch: SbpfArch,
+    simd_0460: bool,
     generate_config: bool,
 ) -> Result<u8> {
     let mut command = Command::new("rustup");
@@ -129,7 +145,7 @@ pub(crate) fn run_cargo_build(
 
     if let Some(config_path) = find_cargo_config(manifest_path) {
         eprintln!(
-            "using existing Cargo config at {}; not injecting SBPF rustflags",
+            "using existing SBPF rustflags from {}",
             config_path.display()
         );
     } else if generate_config {
@@ -141,13 +157,17 @@ pub(crate) fn run_cargo_build(
         fs::create_dir_all(&cargo_dir).with_context(|| {
             format!("failed to create {}", cargo_dir.display())
         })?;
-        let config = ensure_recommended_cargo_config_in_content("", arch)?;
+        let config =
+            ensure_recommended_cargo_config_in_content("", arch, simd_0460)?;
         fs::write(&config_path, config).with_context(|| {
             format!("failed to write {}", config_path.display())
         })?;
         eprintln!("generated Cargo config at {}", config_path.display());
     } else {
-        command.env(TARGET_RUSTFLAGS_ENV, merged_target_rustflags(arch));
+        command.env(
+            TARGET_RUSTFLAGS_ENV,
+            merged_target_rustflags(arch, simd_0460),
+        );
     }
 
     eprintln!("running rustup run nightly cargo build for {TARGET}");
@@ -162,6 +182,7 @@ pub(crate) fn run_cargo_build(
 pub(crate) fn ensure_recommended_cargo_config_in_content(
     config: &str,
     arch: SbpfArch,
+    simd_0460: bool,
 ) -> Result<String> {
     let mut doc = parse_config(config)?;
 
@@ -197,7 +218,8 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
             })
         })
         .transpose()?;
-    let rustflags = rustflags_config_array(existing_rustflags, arch)?;
+    let rustflags =
+        rustflags_config_array(existing_rustflags, arch, simd_0460)?;
     target_table["rustflags"] = rustflags;
 
     Ok(doc.to_string())
@@ -206,6 +228,7 @@ pub(crate) fn ensure_recommended_cargo_config_in_content(
 fn rustflags_config_array(
     existing: Option<&Array>,
     arch: SbpfArch,
+    simd_0460: bool,
 ) -> Result<Item> {
     let mut flags = Vec::new();
     if let Some(existing) = existing {
@@ -223,7 +246,7 @@ fn rustflags_config_array(
         }
     }
 
-    let rustflags = target_rustflags(arch);
+    let rustflags = target_rustflags(arch, simd_0460);
     for required in rustflags.as_chunks::<2>().0.iter().map(|pair| &pair[1]) {
         let key = rustflag_key(required);
         if key == ("linker", "--arch") {
@@ -243,9 +266,11 @@ fn rustflags_config_array(
             }
         }
 
-        if let Some(conflicting) = flags.iter().find(|existing| {
-            rustflag_key(existing) == key && *existing != required
+        if let Some(conflicting_index) = flags.iter().position(|existing| {
+            rustflag_key(existing) == key
+                && existing.as_str() != required.as_str()
         }) {
+            let conflicting = &flags[conflicting_index];
             if matches!(
                 key,
                 ("rustc", "linker" | "panic" | "relocation-model")
@@ -253,6 +278,11 @@ fn rustflags_config_array(
                 bail!(
                     "conflicting rustflag: config contains `{conflicting}`, but cargo-build-sbpf requires `{required}`"
                 );
+            }
+
+            if key == ("llvm", "-bpf-stack-size") {
+                flags[conflicting_index] = required.clone();
+                continue;
             }
 
             // --export is appendable so preserve its value without producing conflict.
@@ -356,18 +386,18 @@ fn has_build_std(args: &[OsString]) -> bool {
     false
 }
 
-fn target_rustflags(arch: SbpfArch) -> Vec<String> {
+fn target_rustflags(arch: SbpfArch, simd_0460: bool) -> Vec<String> {
     REQUIRED_RUSTFLAGS
         .iter()
         .map(|flag| flag.to_string())
-        .chain([arch.linker_arg()])
+        .chain(arch.linker_args(simd_0460))
         .chain(RECOMMENDED_RUSTFLAGS.iter().map(|flag| flag.to_string()))
         .flat_map(|flag| ["-C".to_string(), flag])
         .collect()
 }
 
-fn merged_target_rustflags(arch: SbpfArch) -> String {
-    let sbpf_flags = target_rustflags(arch).join(" ");
+fn merged_target_rustflags(arch: SbpfArch, simd_0460: bool) -> String {
+    let sbpf_flags = target_rustflags(arch, simd_0460).join(" ");
     match env::var(TARGET_RUSTFLAGS_ENV) {
         Ok(existing) if !existing.trim().is_empty() => {
             format!("{existing} {sbpf_flags}")
@@ -484,16 +514,19 @@ rustflags = [
 \"link-arg=--dump-module=llvm_dump\",
 ]
 ";
-        let updated =
-            ensure_recommended_cargo_config_in_content(config, SbpfArch::V3)
-                .unwrap();
+        let updated = ensure_recommended_cargo_config_in_content(
+            config,
+            SbpfArch::V3,
+            false,
+        )
+        .unwrap();
         assert!(updated.contains("build-std = [\"core\", \"alloc\"]"));
         assert!(updated.contains("rustflags = [\n    \"-C\",\n"));
         for flag in REQUIRED_RUSTFLAGS
             .iter()
             .chain(RECOMMENDED_RUSTFLAGS)
             .map(|flag| flag.to_string())
-            .chain([SbpfArch::V3.linker_arg()])
+            .chain(SbpfArch::V3.linker_args(false))
         {
             assert!(updated.contains(&flag), "missing {flag}");
         }
@@ -521,10 +554,13 @@ rustflags = [
 \"link-arg=--arch=v3\",
 ]
 ";
-        let error =
-            ensure_recommended_cargo_config_in_content(config, SbpfArch::V0)
-                .unwrap_err()
-                .to_string();
+        let error = ensure_recommended_cargo_config_in_content(
+            config,
+            SbpfArch::V0,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(
             error,
             "sBPF architecture conflict: selected v0, but .cargo/config.toml configures v3\nhelp: use --arch v3, or update/remove link-arg=--arch=v3 from [target.bpfel-unknown-none].rustflags"
@@ -544,6 +580,7 @@ rustflags = [
             let error = ensure_recommended_cargo_config_in_content(
                 &config,
                 SbpfArch::V3,
+                false,
             )
             .unwrap_err()
             .to_string();
@@ -564,9 +601,12 @@ rustflags = [
 \"link-arg=--llvm-args=--bpf-max-stores-per-memfunc=10\",
 ]
 ";
-        let updated =
-            ensure_recommended_cargo_config_in_content(config, SbpfArch::V3)
-                .unwrap();
+        let updated = ensure_recommended_cargo_config_in_content(
+            config,
+            SbpfArch::V3,
+            false,
+        )
+        .unwrap();
         // existing export should be preserved
         assert!(updated.contains("link-arg=--export=custom_symbol"));
         assert!(updated.contains("link-arg=--export=__multi3"));
@@ -577,5 +617,29 @@ rustflags = [
             .contains("link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5"));
         // missing recommended option should be added
         assert!(updated.contains("link-arg=--llvm-args=--disable-gotox"));
+    }
+
+    #[test]
+    fn selects_stack_frame_size_from_arch_and_simd_0460() {
+        let v0 = ensure_recommended_cargo_config_in_content(
+            "",
+            SbpfArch::V0,
+            false,
+        )
+        .unwrap();
+        let v0_after_simd =
+            ensure_recommended_cargo_config_in_content("", SbpfArch::V0, true)
+                .unwrap();
+        let v3 = ensure_recommended_cargo_config_in_content(
+            "",
+            SbpfArch::V3,
+            false,
+        )
+        .unwrap();
+
+        assert!(v0.contains("link-arg=--llvm-args=-bpf-stack-size=8192"));
+        assert!(v0_after_simd
+            .contains("link-arg=--llvm-args=-bpf-stack-size=4096"));
+        assert!(v3.contains("link-arg=--llvm-args=-bpf-stack-size=4096"));
     }
 }
