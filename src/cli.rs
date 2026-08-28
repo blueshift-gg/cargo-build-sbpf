@@ -11,6 +11,7 @@ pub(crate) struct Cli {
     pub(crate) diagnosis_config: DiagnosisConfig,
     pub(crate) diagnose: bool,
     pub(crate) generate_config: bool,
+    pub(crate) simd_0460: bool,
     pub(crate) build_args: Vec<OsString>,
 }
 
@@ -58,6 +59,13 @@ struct Args {
     #[arg(long, hide = true)]
     generate_config: bool,
 
+    #[arg(
+        long = "simd-0460",
+        hide = true,
+        action = clap::ArgAction::SetTrue
+    )]
+    simd_0460: bool,
+
     #[arg(value_name = "CARGO_BUILD_ARGS", allow_hyphen_values = true, num_args = 0..)]
     build_args: Vec<OsString>,
 }
@@ -82,6 +90,7 @@ pub(crate) fn parse_cli(mut args: Vec<OsString>) -> Result<Option<Cli>> {
             },
             diagnose: args.diagnose,
             generate_config: args.generate_config,
+            simd_0460: args.simd_0460,
             build_args: args.build_args,
         })),
         Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
@@ -154,12 +163,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(cli.diagnosis_config.arch, SbpfArch::V0);
+        assert!(!cli.simd_0460);
         assert_eq!(cli.build_args, os_args(&["--features", "debug"]));
 
         let cli = parse_cli(os_args(&["--arch=v3", "--features", "debug"]))
             .unwrap()
             .unwrap();
         assert_eq!(cli.diagnosis_config.arch, SbpfArch::V3);
+        assert_eq!(cli.build_args, os_args(&["--features", "debug"]));
+    }
+
+    #[test]
+    fn parses_hidden_simd_0460_option_without_forwarding_it() {
+        let cli = parse_cli(os_args(&[
+            "--arch",
+            "v0",
+            "--simd-0460",
+            "--features",
+            "debug",
+        ]))
+        .unwrap()
+        .unwrap();
+
+        assert!(cli.simd_0460);
         assert_eq!(cli.build_args, os_args(&["--features", "debug"]));
     }
 
