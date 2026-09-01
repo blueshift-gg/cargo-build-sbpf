@@ -1,86 +1,48 @@
 # cargo-build-sbpf
 
-Build Solana programs with Rust nightly.
+Build an SBPF program with upstream nightly Rust:
 
 ```sh
 cargo build-sbpf
 ```
 
-Build for a specific SBPF architecture:
+The architecture comes from `--arch`, then Cargo config, and defaults to V3
+when neither specifies it. V0 can be selected with the only supported
+option:
 
 ```sh
 cargo build-sbpf --arch v0
-cargo build-sbpf --arch v3
 ```
 
-The default is `v3`.
+Before building, the command checks the toolchain and project dependencies.
+It asks for permission before fixing anything:
 
-Before building, the subcommand checks:
+- A nightly toolchain and `sbpf-linker` 0.2.1 or newer are required. The build
+  stops if either is unavailable and its installation is declined.
+- LLVM 23 is recommended because LLVM 22 generates less optimal SBPF code. If
+  updating nightly is declined, the command warns and continues.
+- `solana-compiler-builtins` is recommended because its compiler builtins are
+  optimized for the SVM. If adding it is declined, the command warns and
+  continues.
 
-- `nightly` is available through rustup and preferably uses LLVM 23,
-- `sbpf-linker` 0.2.1 or newer is on `PATH` or in `$CARGO_HOME/bin`,
-- `solana-compiler-builtins` is present in the `bpfel-unknown-none`
-  normal/build dependency tree,
-- an existing `.cargo/config.toml` (if any) has the required SBPF rustflags.
+These checks do not read or modify Cargo config. A linker installed in
+`$CARGO_HOME/bin` is used even when that directory is not already on `PATH`.
 
-The nightly LLVM version is recommended; the other checks are required. When a
-required issue has an available fix, the build offers to apply it and asks for
-permission before running any external command that changes the
-toolchain, installed binaries, or manifest; otherwise the build stops with an
-explanation. The command then runs the equivalent of
-`cargo +nightly build --release --target bpfel-unknown-none -Z build-std=core,alloc`,
-applying the target-specific SBPF rustflags normally placed in
-`.cargo/config.toml`, unless a Cargo config already exists for the package.
-
-When `sbpf-linker` 0.2.1 or newer is missing, the available fix asks for
-permission before running
-`cargo binstall sbpf-linker --no-confirm --force` so the linker can be
-installed from a prebuilt release instead of compiled locally. If
-`cargo-binstall` is already available, it is reused; otherwise the fix updates
-the stable Rust toolchain and installs `cargo-binstall` with that toolchain
-first. Cargo-installed tools do not need to be exported on the user's `PATH`;
-the linker directory is added to the SBPF build subprocess automatically.
-
-If your project supplies its own compiler builtins, skip that check:
+The command runs:
 
 ```sh
-cargo build-sbpf --skip-builtins-check
+cargo +nightly build \
+    --release \
+    --target bpfel-unknown-none \
+    -Z build-std=core,alloc
 ```
 
-An existing `.cargo/config.toml` is also checked for a smaller set of
-recommended (but not required) SBPF backend tuning flags. Gaps here are
-printed as informational notes and never modify the file during a normal
-build — run `--diagnose` to review and apply them.
-
-Run preflight checks without building:
-
-```sh
-cargo build-sbpf --diagnose
-```
-
-`--diagnose` runs the same checks as a normal build, plus the recommended
-tuning-flag checks, but only reports issues by default — nothing is modified.
-Add `--auto-fix` to apply all available fixes. External commands that change
-the toolchain, installed binaries, or manifest still require confirmation:
-
-```sh
-cargo build-sbpf --diagnose --auto-fix
-```
-
-## Verifying your setup
-
-Three small SBPF programs live under `tests`. Building one checks that the
-toolchain works end to end, and its mollusk test locks down the compute unit
-cost, which catches a toolchain that compiles but lowers the code badly:
-
-```sh
-cargo install --path .
-cd tests/input_loads
-cargo build-sbpf
-cargo test
-```
-
-The same works in `tests/const_rodata` and `tests/stack_args_six`, which needs
-LLVM 23 and otherwise fails with `stack arguments are not supported`. Builds
-always use nightly, so the version that matters is
-`rustc +nightly -vV | grep LLVM`.
+When Cargo finds no `.cargo/config.toml` or legacy `.cargo/config` in its
+configuration hierarchy, including `$CARGO_HOME`, the SBPF rustflags
+are supplied through `CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS`. When a config
+exists, Cargo reads its rustflags instead and `cargo-build-sbpf` supplies
+`sbpf-linker` through Cargo's command-line config. The config's architecture
+must not conflict with `--arch`, and its BPF stack size must match the selected
+policy: V0 uses 8192 bytes before SIMD-0460 and 4096 bytes with SIMD-0460; V3
+uses 4096 bytes. If the stack size is missing or mismatched, the command asks
+permission to update the Cargo config with the required value.
