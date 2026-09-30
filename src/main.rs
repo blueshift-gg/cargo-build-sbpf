@@ -48,11 +48,20 @@ struct CommandLine {
         default_value_t = false
     )]
     simd_0460: bool,
+
+    /// Arguments passed directly to `cargo build`
+    #[arg(last = true, value_name = "CARGO_ARGS")]
+    cargo_args: Vec<OsString>,
 }
 
 fn main() -> Result<ExitCode> {
-    let CargoCli::BuildSbpf(CommandLine { arch, dump, verbose, simd_0460 }) =
-        CargoCli::parse();
+    let CargoCli::BuildSbpf(CommandLine {
+        arch,
+        dump,
+        verbose,
+        simd_0460,
+        cargo_args,
+    }) = CargoCli::parse();
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
@@ -110,6 +119,7 @@ fn main() -> Result<ExitCode> {
         .arg("bpfel-unknown-none")
         .arg("-Z")
         .arg("build-std=core,alloc");
+    command.args(&cargo_args);
     if verbose {
         command.arg("--verbose");
     }
