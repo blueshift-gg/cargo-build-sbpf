@@ -44,6 +44,18 @@ fn check_conflict<T: Copy + Eq>(
     }
 }
 
+fn required_rustflag_conflict(
+    flag: &str,
+) -> Option<(&'static str, &'static str)> {
+    [
+        ("linker=", "linker=sbpf-linker"),
+        ("panic=", "panic=abort"),
+        ("relocation-model=", "relocation-model=static"),
+    ]
+    .into_iter()
+    .find(|(prefix, required)| flag.starts_with(prefix) && flag != *required)
+}
+
 impl BuildConfig {
     pub(crate) fn load(
         cli_arch: Option<SbpfArch>,
@@ -82,6 +94,13 @@ impl BuildConfig {
         let mut configured_stack_size = None;
         for flag in &rustflags {
             let flag = flag.strip_prefix("-C").unwrap_or(flag).trim_start();
+
+            if let Some((_, required)) = required_rustflag_conflict(flag) {
+                bail!(
+                    "conflicting rustflag in {}: config contains `{flag}`, but cargo-build-sbpf requires `{required}`",
+                    path.display()
+                );
+            }
 
             if let Some(value) = flag.strip_prefix("link-arg=--arch=") {
                 let arch = match value {
@@ -157,6 +176,9 @@ impl BuildConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn stack_size_policy() {
@@ -175,6 +197,7 @@ mod tests {
 
     #[test]
     fn loads_string_rustflags_and_rejects_arch_conflicts() {
+        let _guard = CWD_LOCK.lock().unwrap();
         let root = env::temp_dir().join(format!(
             "cargo-build-sbpf-config-test-{}-{}",
             std::process::id(),
@@ -219,5 +242,45 @@ rustflags = "-C link-arg=--llvm-args=-bpf-stack-size=8192"
         let (cli_only, cargo_config) = cli_only.unwrap();
         assert_eq!(cli_only.arch, SbpfArch::V0);
         assert!(cargo_config.is_some());
+    }
+
+    #[test]
+    fn rejects_required_rustflag_conflicts_without_rewriting_config() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let root = env::temp_dir().join(format!(
+            "cargo-build-sbpf-required-flag-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project = root.join("project");
+        fs::create_dir_all(project.join(".cargo")).unwrap();
+
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&project).unwrap();
+        for (configured, required) in [
+            ("linker=custom-linker", "linker=sbpf-linker"),
+            ("panic=unwind", "panic=abort"),
+            ("relocation-model=pic", "relocation-model=static"),
+        ] {
+            let config = format!(
+                "[target.bpfel-unknown-none]\nrustflags = [\"-C\", \"{configured}\"]\n"
+            );
+            let config_path = project.join(".cargo/config.toml");
+            fs::write(&config_path, &config).unwrap();
+
+            let error = match BuildConfig::load(None, false) {
+                Ok(_) => panic!("expected required rustflag conflict"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("conflicting rustflag"));
+            assert!(error.contains(configured));
+            assert!(error.contains(required));
+            assert_eq!(fs::read_to_string(&config_path).unwrap(), config);
+        }
+        env::set_current_dir(original_dir).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }
