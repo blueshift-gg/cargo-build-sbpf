@@ -7,8 +7,6 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use toml_edit::Value;
-
 mod config;
 mod setup;
 
@@ -126,39 +124,42 @@ fn main() -> Result<ExitCode> {
 
     if let Some(config) = cargo_config {
         eprintln!("using Cargo config at {}", config.path.display());
+        let mut config_rustflags = vec![
+            "--cfg=target_os=\"solana\"".to_string(),
+            "--cfg=target_feature=\"static-syscalls\"".to_string(),
+            "-A".to_string(),
+            "explicit_builtin_cfgs_in_flags".to_string(),
+            "-C".to_string(),
+            format!("link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"),
+            "-C".to_string(),
+            format!("link-arg=--arch={arch}"),
+            "-C".to_string(),
+            format!("link-arg=--llvm-args=-bpf-stack-size={stack_size}"),
+            "-C".to_string(),
+            "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5".to_string(),
+            "-C".to_string(),
+            "link-arg=--llvm-args=--disable-gotox".to_string(),
+            "-C".to_string(),
+            "link-arg=--llvm-args=--disable-ldsx".to_string(),
+            "-C".to_string(),
+            "link-arg=--llvm-args=--disable-movsx".to_string(),
+            "-C".to_string(),
+            format!("target-cpu={cpu}"),
+            "-C".to_string(),
+            "target-feature=+allows-misaligned-mem-access".to_string(),
+        ];
+        if let Some(path) = dump {
+            config_rustflags.extend([
+                "-C".to_string(),
+                format!("link-arg=--dump-module={}", path.display()),
+                "-C".to_string(),
+                format!("link-arg=--dump-cfg-dir={}", path.display()),
+            ]);
+        }
         command
             .arg("--config")
-            .arg(r#"target.bpfel-unknown-none.linker="sbpf-linker""#)
-            .arg("--config")
-            .arg(
-                r#"target.bpfel-unknown-none.rustflags=['--cfg=target_os="solana"', '--cfg=target_feature="static-syscalls"', "-A", "explicit_builtin_cfgs_in_flags"]"#,
-            )
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"
-                )),
-            ));
-        if !config.has_arch {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!("link-arg=--arch={arch}")),
-            ));
-        }
-        if let Some(path) = dump {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}, \"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--dump-module={}",
-                    path.display()
-                )),
-                Value::from(format!(
-                    "link-arg=--dump-cfg-dir={}",
-                    path.display()
-                )),
-            ));
-        }
+            .arg(r#"target.bpfel-unknown-none.linker="sbpf-linker""#);
+        command.env("RUSTFLAGS", config_rustflags.join(" "));
     } else {
         if let Some(path) = dump {
             rustflags.extend([
