@@ -233,7 +233,7 @@ fn ensure_compiler_builtins(cargo: &OsStr) -> Result<()> {
         return Ok(());
     }
 
-    let command = "cargo add solana-compiler-builtins --git https://github.com/blueshift-gg/solana-compiler-builtins";
+    let command = "cargo add solana-compiler-builtins";
     if Confirm::new()
         .with_prompt(format!("Run `{command}`?"))
         .default(false)
@@ -241,12 +241,7 @@ fn ensure_compiler_builtins(cargo: &OsStr) -> Result<()> {
         .context("failed to request permission")?
     {
         let status = Command::new(cargo)
-            .args([
-                "add",
-                "solana-compiler-builtins",
-                "--git",
-                "https://github.com/blueshift-gg/solana-compiler-builtins",
-            ])
+            .args(["add", "solana-compiler-builtins"])
             .status()
             .context("failed to add solana-compiler-builtins")?;
         if status.success() {
