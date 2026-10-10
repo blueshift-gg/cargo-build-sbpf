@@ -30,7 +30,7 @@ enum CargoCli {
 #[command(version, about = "Build an SBPF program with Rust nightly")]
 struct CommandLine {
     /// SBPF architecture to build for. Defaults to config, then `v3`.
-    #[clap(long, value_enum)]
+    #[clap(long, value_enum, hide = true)]
     arch: Option<SbpfArch>,
 
     /// Dump the linked LLVM module and control-flow graphs into this directory.

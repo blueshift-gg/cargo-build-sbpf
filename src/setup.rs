@@ -113,7 +113,7 @@ fn ensure_sbpf_linker() -> Result<PathBuf> {
             .next()?;
         Version::parse(version)
             .ok()
-            .is_some_and(|version| version >= Version::new(0, 2, 1))
+            .is_some_and(|version| version >= Version::new(0, 2, 3))
             .then_some(linker)
     };
 
@@ -140,7 +140,7 @@ fn ensure_sbpf_linker() -> Result<PathBuf> {
                     .context("failed to request permission")?
                 {
                     bail!(
-                    "sbpf-linker 0.2.1 or newer is required for SBPF builds"
+                    "sbpf-linker 0.2.3 or newer is required for SBPF builds"
                 );
                 }
 
@@ -192,7 +192,7 @@ fn ensure_sbpf_linker() -> Result<PathBuf> {
         .interact()
         .context("failed to request permission")?
     {
-        bail!("sbpf-linker 0.2.1 or newer is required for SBPF builds");
+        bail!("sbpf-linker 0.2.3 or newer is required for SBPF builds");
     }
 
     let status = Command::new(cargo_binstall)
@@ -204,7 +204,7 @@ fn ensure_sbpf_linker() -> Result<PathBuf> {
     }
 
     compatible_sbpf_linker().context(
-        "sbpf-linker was installed but version 0.2.1 or newer could not be located",
+        "sbpf-linker was installed but version 0.2.3 or newer could not be located",
     )
 }
 
