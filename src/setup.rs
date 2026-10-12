@@ -1,18 +1,16 @@
 use std::{
     env,
-    ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 
 use anyhow::{bail, Context, Result};
 use dialoguer::Confirm;
 use rustc_version::{Version, VersionMeta};
 
-pub(crate) fn ensure(cargo: &OsStr) -> Result<PathBuf> {
+pub(crate) fn ensure() -> Result<PathBuf> {
     ensure_nightly()?;
     let linker = ensure_sbpf_linker()?;
-    ensure_compiler_builtins(cargo)?;
 
     linker
         .parent()
@@ -206,59 +204,4 @@ fn ensure_sbpf_linker() -> Result<PathBuf> {
     compatible_sbpf_linker().context(
         "sbpf-linker was installed but version 0.2.3 or newer could not be located",
     )
-}
-
-fn ensure_compiler_builtins(cargo: &OsStr) -> Result<()> {
-    let output = Command::new(cargo)
-        .args([
-            "tree",
-            "--target",
-            "bpfel-unknown-none",
-            "-e",
-            "normal,build",
-            "--prefix",
-            "none",
-        ])
-        .stderr(Stdio::inherit())
-        .output()
-        .context("failed to check for solana-compiler-builtins")?;
-    if !output.status.success() {
-        bail!("cargo tree failed while checking for solana-compiler-builtins");
-    }
-
-    if String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-        line.strip_prefix("solana-compiler-builtins")
-            .is_some_and(|rest| rest.starts_with(' '))
-    }) {
-        return Ok(());
-    }
-
-    let command = "cargo add solana-compiler-builtins --git https://github.com/blueshift-gg/solana-compiler-builtins";
-    if Confirm::new()
-        .with_prompt(format!("Run `{command}`?"))
-        .default(false)
-        .interact()
-        .context("failed to request permission")?
-    {
-        let status = Command::new(cargo)
-            .args([
-                "add",
-                "solana-compiler-builtins",
-                "--git",
-                "https://github.com/blueshift-gg/solana-compiler-builtins",
-            ])
-            .status()
-            .context("failed to add solana-compiler-builtins")?;
-        if status.success() {
-            return Ok(());
-        }
-        eprintln!(
-            "warning: {command} failed with status {status}; continuing without it"
-        );
-    }
-
-    eprintln!(
-        "warning: continuing without solana-compiler-builtins, whose compiler builtins are optimized for the SVM"
-    );
-    Ok(())
 }

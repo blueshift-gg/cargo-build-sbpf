@@ -42,9 +42,6 @@ It asks for permission before fixing anything:
   stops if either is unavailable and its installation is declined.
 - LLVM 23 is recommended because LLVM 22 generates less optimal SBPF code. If
   updating nightly is declined, the command warns and continues.
-- `solana-compiler-builtins` is recommended because its compiler builtins are
-  optimized for the SVM. If adding it is declined, the command warns and
-  continues.
 
 The toolchain and dependency checks do not modify Cargo config. A linker
 installed in `$CARGO_HOME/bin` is used even when that directory is not already
@@ -57,3 +54,9 @@ Build configuration is applied as follows:
    supplied through `CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS`.
 2. When a config exists, Cargo reads its rustflags and `cargo-build-sbpf`
    supplies `sbpf-linker` through Cargo's command-line config.
+
+## Compiler builtins
+
+`solana-compiler-builtins` provides compiler builtins optimized for the SVM.
+`cargo build-sbpf` builds and bundles it automatically, so there is no need to
+add it to your `Cargo.toml`.

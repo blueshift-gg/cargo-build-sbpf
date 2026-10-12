@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use toml_edit::Value;
 
+mod builtins;
 mod config;
 mod setup;
 
@@ -65,7 +66,13 @@ fn main() -> Result<ExitCode> {
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
-    let linker_dir = setup::ensure(&cargo)?;
+    let linker_dir = setup::ensure()?;
+    // The toolchain owns the compiler builtins: it builds and caches them
+    // itself and passes the artifact to the linker. They are deliberately not
+    // in the application's Cargo dependency graph.
+    let compiler_builtins = builtins::ensure(&cargo, &build_config)?;
+    let [pre_link_flag, pre_link_arg] =
+        builtins::pre_link_args(&compiler_builtins);
 
     let stack_size = build_config.stack_size();
     let (arch, cpu) = match build_config.arch {
@@ -100,6 +107,8 @@ fn main() -> Result<ExitCode> {
         "link-arg=--llvm-args=--disable-movsx",
         format!("target-cpu={cpu}"),
         "target-feature=+allows-misaligned-mem-access";
+        pre_link_flag.to_string_lossy(),
+        pre_link_arg.to_string_lossy(),
         "--cfg=target_os=\"solana\"",
         "--cfg=target_feature=\"static-syscalls\"",
         "-A explicit_builtin_cfgs_in_flags",
@@ -139,6 +148,12 @@ fn main() -> Result<ExitCode> {
                 Value::from(format!(
                     "link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"
                 )),
+            ))
+            .arg("--config")
+            .arg(format!(
+                "target.bpfel-unknown-none.rustflags=[{}, {}]",
+                Value::from(pre_link_flag.to_string_lossy().into_owned()),
+                Value::from(pre_link_arg.to_string_lossy().into_owned()),
             ));
         if !config.has_arch {
             command.arg("--config").arg(format!(
