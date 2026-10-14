@@ -105,6 +105,7 @@ fn main() -> Result<ExitCode> {
         "link-arg=--llvm-args=--disable-gotox",
         "link-arg=--llvm-args=--disable-ldsx",
         "link-arg=--llvm-args=--disable-movsx",
+        "link-arg=--llvm-args=--disable-sdiv-smod",
         format!("target-cpu={cpu}"),
         "target-feature=+allows-misaligned-mem-access";
         pre_link_flag.to_string_lossy(),
