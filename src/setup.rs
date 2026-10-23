@@ -8,6 +8,9 @@ use anyhow::{bail, Context, Result};
 use dialoguer::Confirm;
 use rustc_version::{Version, VersionMeta};
 
+const MINIMUM_NIGHTLY_VERSION: (u64, u64, u64) = (1, 100, 0);
+const MINIMUM_LLVM_VERSION: u64 = 23;
+
 pub(crate) fn ensure() -> Result<PathBuf> {
     ensure_nightly()?;
     let linker = ensure_sbpf_linker()?;
@@ -46,30 +49,40 @@ fn ensure_nightly() -> Result<()> {
         metadata = VersionMeta::for_command(command).ok();
     }
 
-    let detected_llvm_major = metadata
-        .and_then(|metadata| metadata.llvm_version)
-        .map(|version| version.major);
-    if detected_llvm_major == Some(23) {
+    if metadata.is_some_and(|metadata| {
+        metadata
+            .llvm_version
+            .is_some_and(|version| version.major >= MINIMUM_LLVM_VERSION)
+            && (
+                metadata.semver.major,
+                metadata.semver.minor,
+                metadata.semver.patch,
+            ) >= MINIMUM_NIGHTLY_VERSION
+    }) {
         return Ok(());
     }
 
-    if Confirm::new()
+    if !Confirm::new()
         .with_prompt(
-            "Nightly does not use LLVM 23. Run `rustup update nightly`?",
+            "A newer nightly toolchain is required. Run `rustup update nightly`?",
         )
         .default(false)
         .interact()
         .context("failed to request permission")?
     {
-        let status = Command::new("rustup")
-            .args(["update", "nightly"])
-            .status()
-            .context("failed to run rustup update nightly")?;
-        if !status.success() {
-            eprintln!(
-                "warning: rustup update nightly failed with status {status}"
-            );
-        }
+        bail!(
+            "Please upgrade nightly toolchain with `rustup update nightly`."
+        );
+    }
+
+    let status = Command::new("rustup")
+        .args(["update", "nightly"])
+        .status()
+        .context("failed to run rustup update nightly")?;
+    if !status.success() {
+        eprintln!(
+            "warning: rustup update nightly failed with status {status}"
+        );
     }
 
     let mut command = Command::new("rustup");
@@ -77,7 +90,7 @@ fn ensure_nightly() -> Result<()> {
     if VersionMeta::for_command(command)
         .ok()
         .and_then(|metadata| metadata.llvm_version)
-        .is_none_or(|version| version.major != 23)
+        .is_none_or(|version| version.major < MINIMUM_LLVM_VERSION)
     {
         eprintln!(
             "warning: an older LLVM version may generate less optimal SBPF code"

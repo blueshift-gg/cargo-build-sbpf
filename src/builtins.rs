@@ -19,8 +19,8 @@
 //! dependencies already takes precedence over the toolchain's fallback, so the
 //! local copy wins without the toolchain needing to know about it.
 //!
-//! The artifact is the dependency's `.rlib` out of that package's `deps/`. On
-//! SBPF, rustc's target spec sets `obj-is-bitcode`, so the "object" files
+//! The artifact is the dependency's `.rlib`, reported by cargo's `compiler-artifact`
+//! message. On SBPF, rustc's target spec sets `obj-is-bitcode`, so the "object" files
 //! inside an rlib are already LLVM bitcode -- exactly what `sbpf-linker`
 //! consumes. An `.a` would hold the same bitcode members with the metadata
 //! stripped, which buys nothing, and a bare `.bc` would lose the archive
@@ -32,11 +32,13 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     hash::{Hash as _, Hasher as _},
+    io::BufReader,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{bail, Context, Result};
+use cargo_metadata::{Message, MetadataCommand};
 
 use crate::config::{BuildConfig, SbpfArch};
 
@@ -133,18 +135,7 @@ fn generate_package(root: &Path) -> Result<PathBuf> {
          use solana_compiler_builtins as _;\n"
     );
 
-    if write_if_changed(&package.join("Cargo.toml"), &manifest)? {
-        // The manifest asks for something different than it did last time, so
-        // whatever the lockfile resolved to no longer answers the question.
-        // Dropping it makes `resolve_identity` resolve again; keeping it would
-        // key the cache on the previous dependency and hand back its artifact.
-        let lock = package.join("Cargo.lock");
-        if lock.is_file() {
-            fs::remove_file(&lock).with_context(|| {
-                format!("failed to remove {}", lock.display())
-            })?;
-        }
-    }
+    write_if_changed(&package.join("Cargo.toml"), &manifest)?;
     write_if_changed(&package.join("src/lib.rs"), &lib)?;
     Ok(package)
 }
@@ -160,59 +151,28 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// What Cargo resolved the builtins to, read out of the generated package's
-/// lockfile: the version, and the full identity including the git commit.
-///
-/// The source matters, not just the version: a git branch moves while its
-/// version stays put, so the version alone would let a stale artifact be
-/// reused. The lockfile is kept, so the choice is made once and then stays put
-/// rather than drifting build to build; it is discarded when the manifest
-/// changes, and removing the cache directory picks up a newer release.
+/// What Cargo resolved the builtins to: the version, and the package id.
+/// The id pins where the builtins came from and at what version, so a
+/// dependency change changes the cache key. `cargo metadata` resolves the
+/// manifest and reports both, and keeps the lockfile in sync, so removing
+/// the cache directory picks up a newer release.
 fn resolve_identity(
     cargo: &OsStr,
     package: &Path,
 ) -> Result<(String, String)> {
-    let lock = package.join("Cargo.lock");
-    if !lock.is_file() {
-        let status = Command::new(cargo)
-            .arg("+nightly")
-            .arg("generate-lockfile")
-            .arg("--manifest-path")
-            .arg(package.join("Cargo.toml"))
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .with_context(|| format!("failed to resolve {CRATE}"))?;
-        if !status.success() {
-            bail!("resolving {CRATE} failed with status {status}");
-        }
-    }
-
-    let contents = fs::read_to_string(&lock)
-        .with_context(|| format!("failed to read {}", lock.display()))?;
-    // The lockfile is a sequence of `[[package]]` tables; find ours and take
-    // the `version` and `source` that follow its `name`.
-    let mut lines = contents.lines();
-    while let Some(line) = lines.next() {
-        if line.trim() != format!("name = \"{CRATE}\"") {
-            continue;
-        }
-        let mut version = None;
-        let mut source = String::new();
-        for line in lines.by_ref().take(3) {
-            let line = line.trim();
-            if let Some(value) = line.strip_prefix("version = ") {
-                version = Some(value.trim_matches('"').to_string());
-            } else if let Some(value) = line.strip_prefix("source = ") {
-                source = value.trim_matches('"').to_string();
-            }
-        }
-        let version = version.with_context(|| {
-            format!("{CRATE} has no version in {}", lock.display())
-        })?;
-        return Ok((version.clone(), format!("{version} {source}")));
-    }
-    bail!("{CRATE} is not in {}", lock.display())
+    let metadata = MetadataCommand::new()
+        .cargo_path(cargo)
+        .env("RUSTUP_TOOLCHAIN", "nightly")
+        .manifest_path(package.join("Cargo.toml"))
+        .exec()
+        .with_context(|| format!("failed to resolve {CRATE}"))?;
+    let package = metadata
+        .packages
+        .into_iter()
+        .find(|package| package.name == CRATE)
+        .with_context(|| format!("{CRATE} is not in the dependency graph"))?;
+    let version = package.version.to_string();
+    Ok((version, package.id.repr))
 }
 
 /// The codegen settings the artifact is built with. They have to match the
@@ -296,7 +256,7 @@ fn build(
         format!("failed to create {}", target_dir.display())
     })?;
 
-    let status = Command::new(cargo)
+    let mut child = Command::new(cargo)
         .arg("+nightly")
         .arg("build")
         .arg("--release")
@@ -305,6 +265,7 @@ fn build(
         .arg("bpfel-unknown-none")
         .arg("-Z")
         .arg("build-std=core,alloc")
+        .arg("--message-format=json-render-diagnostics")
         .arg("--manifest-path")
         .arg(package.join("Cargo.toml"))
         .arg("--target-dir")
@@ -313,32 +274,39 @@ fn build(
         // the flags go through the environment, which outranks any config file
         // Cargo might discover next to the generated package.
         .env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS", rustflags.join(" "))
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .status()
+        .spawn()
         .with_context(|| format!("failed to build {CRATE}"))?;
+
+    let stdout =
+        child.stdout.take().context("failed to pipe cargo's stdout")?;
+    let rlib = Message::parse_stream(BufReader::new(stdout))
+        .filter_map(|message| match message.ok()? {
+            Message::CompilerArtifact(artifact)
+                if artifact.target.name == "solana_compiler_builtins" =>
+            {
+                artifact
+                    .filenames
+                    .into_iter()
+                    .find(|filename| filename.extension() == Some("rlib"))
+            }
+            _ => None,
+        })
+        .last();
+
+    let status = child.wait()?;
     if !status.success() {
         bail!("building {CRATE} failed with status {status}");
     }
-
     // The package itself holds nothing; what the linker needs is the
     // dependency's rlib, with the builtins' bitcode in it.
-    let deps = target_dir.join("bpfel-unknown-none/release/deps");
-    let rlib = fs::read_dir(&deps)
-        .with_context(|| format!("failed to read {}", deps.display()))?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_str()?;
-            (name.starts_with("libsolana_compiler_builtins")
-                && name.ends_with(".rlib"))
-            .then_some(path)
-        })
-        .next()
-        .with_context(|| format!("no {CRATE} rlib in {}", deps.display()))?;
+    let rlib = rlib
+        .with_context(|| format!("cargo built {CRATE} but no rlib found"))?;
 
     let artifact = cache.join("libsolana_compiler_builtins.rlib");
     fs::copy(&rlib, &artifact).with_context(|| {
-        format!("failed to copy {} to {}", rlib.display(), artifact.display())
+        format!("failed to copy {rlib} to {}", artifact.display())
     })?;
     Ok(())
 }

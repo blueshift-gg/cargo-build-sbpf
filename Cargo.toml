@@ -15,6 +15,7 @@ categories = ["development-tools", "command-line-utilities"]
 [dependencies]
 anyhow = "1.0.103"
 cargo-config2 = "0.1"
+cargo_metadata = "0.23"
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = "0.12"
 home = "0.5"
