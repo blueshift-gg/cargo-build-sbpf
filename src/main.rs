@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use toml_edit::Value;
+use toml_edit::Array;
 
 mod builtins;
 mod config;
@@ -90,7 +90,7 @@ fn main() -> Result<ExitCode> {
             $(
                 flags.push(($rustc_flag).to_string());
             )+
-            flags.join(" ")
+            flags
         }};
     }
 
@@ -99,7 +99,6 @@ fn main() -> Result<ExitCode> {
         "panic=abort",
         "relocation-model=static",
         format!("link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"),
-        format!("link-arg=--arch={arch}"),
         format!("link-arg=--llvm-args=-bpf-stack-size={stack_size}"),
         "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5",
         "link-arg=--llvm-args=--disable-gotox",
@@ -113,8 +112,23 @@ fn main() -> Result<ExitCode> {
         pre_link_arg.to_string_lossy(),
         "--cfg=target_os=\"solana\"",
         "--cfg=target_feature=\"static-syscalls\"",
-        "-A explicit_builtin_cfgs_in_flags",
+        "-A",
+        "explicit_builtin_cfgs_in_flags",
     );
+    if !cargo_config.as_ref().is_some_and(|config| config.has_arch) {
+        rustflags.extend(["-C".into(), format!("link-arg=--arch={arch}")]);
+    }
+    if let Some(path) = dump {
+        rustflags.extend([
+            "-C".into(),
+            format!("link-arg=--dump-module={}", path.display()),
+            "-C".into(),
+            format!("link-arg=--dump-cfg-dir={}", path.display()),
+        ]);
+    }
+    if let Some(config) = cargo_config {
+        eprintln!("using Cargo config at {}", config.path.display());
+    }
 
     let mut command = Command::new(cargo);
     let mut paths = vec![linker_dir];
@@ -129,61 +143,17 @@ fn main() -> Result<ExitCode> {
         .arg("--target")
         .arg("bpfel-unknown-none")
         .arg("-Z")
-        .arg("build-std=core,alloc");
+        .arg("build-std=core,alloc")
+        // Cargo merges these after any rustflags from Cargo config, and before
+        // any `--config` passed through below.
+        .arg("--config")
+        .arg(format!(
+            "target.bpfel-unknown-none.rustflags={}",
+            rustflags.into_iter().collect::<Array>()
+        ));
     command.args(&cargo_args);
     if verbose {
         command.arg("--verbose");
-    }
-
-    if let Some(config) = cargo_config {
-        eprintln!("using Cargo config at {}", config.path.display());
-        command
-            .arg("--config")
-            .arg(r#"target.bpfel-unknown-none.linker="sbpf-linker""#)
-            .arg("--config")
-            .arg(
-                r#"target.bpfel-unknown-none.rustflags=['--cfg=target_os="solana"', '--cfg=target_feature="static-syscalls"', "-A", "explicit_builtin_cfgs_in_flags"]"#,
-            )
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"
-                )),
-            ))
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[{}, {}]",
-                Value::from(pre_link_flag.to_string_lossy().into_owned()),
-                Value::from(pre_link_arg.to_string_lossy().into_owned()),
-            ));
-        if !config.has_arch {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!("link-arg=--arch={arch}")),
-            ));
-        }
-        if let Some(path) = dump {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}, \"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--dump-module={}",
-                    path.display()
-                )),
-                Value::from(format!(
-                    "link-arg=--dump-cfg-dir={}",
-                    path.display()
-                )),
-            ));
-        }
-    } else {
-        if let Some(path) = dump {
-            rustflags.extend([
-                format!(" -C link-arg=--dump-module={}", path.display()),
-                format!(" -C link-arg=--dump-cfg-dir={}", path.display()),
-            ]);
-        }
-        command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS", rustflags);
     }
 
     if verbose {

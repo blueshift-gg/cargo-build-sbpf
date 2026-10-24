@@ -47,13 +47,9 @@ The toolchain and dependency checks do not modify Cargo config. A linker
 installed in `$CARGO_HOME/bin` is used even when that directory is not already
 on `PATH`.
 
-Build configuration is applied as follows:
-
-1. When Cargo finds no `.cargo/config.toml` or legacy `.cargo/config` in its
-   configuration hierarchy, including `$CARGO_HOME`, the SBPF rustflags are
-   supplied through `CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS`.
-2. When a config exists, Cargo reads its rustflags and `cargo-build-sbpf`
-   supplies `sbpf-linker` through Cargo's command-line config.
+The SBPF rustflags are always passed through Cargo's `--config`. Cargo merges
+them after any `target.bpfel-unknown-none.rustflags` from Cargo config, and
+before rustflags from any `--config` passed through to `cargo build`.
 
 ## Compiler builtins
 
