@@ -70,7 +70,8 @@ fn main() -> Result<ExitCode> {
     // The toolchain owns the compiler builtins: it builds and caches them
     // itself and passes the artifact to the linker. They are deliberately not
     // in the application's Cargo dependency graph.
-    let compiler_builtins = builtins::ensure(&cargo, &build_config)?;
+    let compiler_builtins =
+        builtins::ensure(&cargo, &build_config, &cargo_args)?;
     let [pre_link_flag, pre_link_arg] =
         builtins::pre_link_args(&compiler_builtins);
 

@@ -39,6 +39,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use cargo_metadata::{Message, MetadataCommand};
+use serde::Deserialize;
 
 use crate::config::{BuildConfig, SbpfArch};
 
@@ -66,11 +67,13 @@ const CACHE_ENV: &str = "SBPF_COMPILER_BUILTINS_CACHE";
 pub(crate) fn ensure(
     cargo: &OsStr,
     build_config: &BuildConfig,
+    cargo_args: &[OsString],
 ) -> Result<PathBuf> {
     let root = cache_root()?;
     let package = generate_package(&root)?;
 
-    let rustflags = rustflags(build_config);
+    let profile = std_profile(cargo, cargo_args)?;
+    let rustflags = rustflags(build_config, &profile);
     let (version, identity) = resolve_identity(cargo, &package)?;
     let key = cache_key(&rustflags, &version, &identity)?;
 
@@ -175,22 +178,110 @@ fn resolve_identity(
     Ok((version, package.id.repr))
 }
 
-/// The codegen settings the artifact is built with. They have to match the
-/// application's target: the same SBPF architecture and CPU, the same target
-/// features, the same panic strategy, the same relocation model.
+/// The profile settings Cargo gives the standard library's `compiler_builtins`
+/// in this build. `-Zbuild-std` builds the standard library with the project's
+/// profile, so Rust's own builtins get the project's overflow checks, debug
+/// assertions and so on; these builtins follow the same settings.
+#[derive(Deserialize)]
+struct Profile {
+    opt_level: String,
+    overflow_checks: bool,
+    debug_assertions: bool,
+    debuginfo: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct UnitGraph {
+    units: Vec<Unit>,
+}
+
+#[derive(Deserialize)]
+struct Unit {
+    #[serde(default)]
+    is_std: bool,
+    target: UnitTarget,
+    profile: Profile,
+}
+
+#[derive(Deserialize)]
+struct UnitTarget {
+    name: String,
+}
+
+/// Reads that profile from Cargo's unit graph for the same build, including
+/// the arguments forwarded to `cargo build`, so `Cargo.toml`, Cargo config,
+/// `CARGO_PROFILE_*` and `--profile` all count. Nothing is built.
+fn std_profile(cargo: &OsStr, cargo_args: &[OsString]) -> Result<Profile> {
+    let output = Command::new(cargo)
+        .arg("+nightly")
+        .arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg("bpfel-unknown-none")
+        .arg("-Z")
+        .arg("build-std=core,alloc")
+        .arg("-Z")
+        .arg("unstable-options")
+        .arg("--unit-graph")
+        .args(cargo_args)
+        .output()
+        .context("failed to read Cargo's unit graph")?;
+    if !output.status.success() {
+        bail!(
+            "reading Cargo's unit graph failed with status {}:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    parse_std_profile(&output.stdout)
+}
+
+fn parse_std_profile(unit_graph: &[u8]) -> Result<Profile> {
+    let graph: UnitGraph = serde_json::from_slice(unit_graph)
+        .context("failed to parse Cargo's unit graph")?;
+    graph
+        .units
+        .into_iter()
+        .find(|unit| unit.is_std && unit.target.name == "compiler_builtins")
+        .map(|unit| unit.profile)
+        .context("Cargo's unit graph has no standard `compiler_builtins`")
+}
+
+/// The codegen settings the artifact is built with. The SBPF architecture and
+/// CPU, the target features and the relocation model have to match the
+/// application's target; the rest follows `profile`.
+///
+/// The panic strategy is `immediate-abort`. With `abort`, a failed overflow
+/// check or debug assertion calls `core`'s panic functions, and those calls
+/// name the `core` built here, not the application's, so the link fails. With
+/// `immediate-abort` it traps in place, which is what rustc does for Rust's own
+/// `compiler_builtins`.
 ///
 /// Every one of these ends up in the cache key, so changing any of them
 /// produces a different artifact rather than reusing an incompatible one.
-fn rustflags(build_config: &BuildConfig) -> Vec<String> {
+fn rustflags(build_config: &BuildConfig, profile: &Profile) -> Vec<String> {
     let cpu = match build_config.arch {
         SbpfArch::V0 => "v2",
         SbpfArch::V3 => "v4",
     };
+    let on_off = |enabled: bool| if enabled { "on" } else { "off" };
+    let debuginfo = match &profile.debuginfo {
+        serde_json::Value::String(level) => level.clone(),
+        level => level.to_string(),
+    };
     [
         "-C",
-        "opt-level=3",
+        &format!("opt-level={}", profile.opt_level),
         "-C",
-        "panic=abort",
+        &format!("overflow-checks={}", on_off(profile.overflow_checks)),
+        "-C",
+        &format!("debug-assertions={}", on_off(profile.debug_assertions)),
+        "-C",
+        &format!("debuginfo={debuginfo}"),
+        "-Z",
+        "unstable-options",
+        "-C",
+        "panic=immediate-abort",
         "-C",
         "relocation-model=static",
         "-C",
@@ -270,10 +361,11 @@ fn build(
         .arg(package.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(&target_dir)
-        // The application's Cargo config has nothing to do with this build, so
-        // the flags go through the environment, which outranks any config file
-        // Cargo might discover next to the generated package.
-        .env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS", rustflags.join(" "))
+        // The artifact is cached under these flags, so it is built with exactly
+        // them: `CARGO_ENCODED_RUSTFLAGS` outranks `RUSTFLAGS` and the rustflags
+        // of any Cargo config, and the profile settings in it come after the
+        // ones Cargo derives from a profile, so they win too.
+        .env("CARGO_ENCODED_RUSTFLAGS", rustflags.join("\x1f"))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -323,4 +415,45 @@ pub(crate) fn pre_link_args(artifact: &Path) -> [OsString; 2] {
     let mut arg = OsString::from("pre-link-arg=");
     arg.push(artifact);
     [OsString::from("-Z"), arg]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follows_the_standard_librarys_builtins_profile() {
+        // A project crate may also be called `compiler_builtins`; only the
+        // standard library's counts.
+        let unit_graph = br#"{"version": 1, "roots": [], "units": [
+            {"is_std": true, "target": {"name": "core"},
+             "profile": {"opt_level": "3", "overflow_checks": false,
+                         "debug_assertions": false, "debuginfo": 0}},
+            {"target": {"name": "compiler_builtins"},
+             "profile": {"opt_level": "0", "overflow_checks": false,
+                         "debug_assertions": false, "debuginfo": 2}},
+            {"is_std": true, "target": {"name": "compiler_builtins"},
+             "profile": {"opt_level": "s", "overflow_checks": true,
+                         "debug_assertions": true,
+                         "debuginfo": "line-tables-only"}}
+        ]}"#;
+        let profile = parse_std_profile(unit_graph).unwrap();
+        let flags = rustflags(
+            &BuildConfig { arch: SbpfArch::V3, simd_0460: false },
+            &profile,
+        );
+        for flag in [
+            "opt-level=s",
+            "overflow-checks=on",
+            "debug-assertions=on",
+            "debuginfo=line-tables-only",
+            "panic=immediate-abort",
+            "target-cpu=v4",
+        ] {
+            assert!(
+                flags.iter().any(|f| f == flag),
+                "{flag} not in {flags:?}"
+            );
+        }
+    }
 }

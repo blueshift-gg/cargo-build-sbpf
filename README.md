@@ -55,4 +55,7 @@ before rustflags from any `--config` passed through to `cargo build`.
 
 `solana-compiler-builtins` provides compiler builtins optimized for the SVM.
 `cargo build-sbpf` builds and bundles it automatically, so there is no need to
-add it to your `Cargo.toml`.
+add it to your `Cargo.toml`. It gets the same profile settings that
+`-Zbuild-std` gives Rust's own `compiler_builtins` in your build (opt level,
+overflow checks, debug assertions and debuginfo), and each combination is
+cached separately. Rustflags from your project do not apply to it.
