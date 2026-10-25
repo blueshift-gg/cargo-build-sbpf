@@ -74,7 +74,7 @@ pub(crate) fn ensure(
 
     let profile = std_profile(cargo, cargo_args)?;
     let rustflags = rustflags(build_config, &profile);
-    let (version, identity) = resolve_identity(cargo, &package)?;
+    let (version, identity) = resolve_identity(cargo, &package, cargo_args)?;
     let key = cache_key(&rustflags, &version, &identity)?;
 
     let cache = root.join(&key);
@@ -162,11 +162,13 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
 fn resolve_identity(
     cargo: &OsStr,
     package: &Path,
+    cargo_args: &[OsString],
 ) -> Result<(String, String)> {
     let metadata = MetadataCommand::new()
         .cargo_path(cargo)
         .env("RUSTUP_TOOLCHAIN", "nightly")
         .manifest_path(package.join("Cargo.toml"))
+        .other_options(resolve_args(cargo_args))
         .exec()
         .with_context(|| format!("failed to resolve {CRATE}"))?;
     let package = metadata
@@ -176,6 +178,30 @@ fn resolve_identity(
         .with_context(|| format!("{CRATE} is not in the dependency graph"))?;
     let version = package.version.to_string();
     Ok((version, package.id.repr))
+}
+
+/// The arguments forwarded to `cargo build` that also apply when resolving the
+/// builtins, so that resolving works wherever the program's own build would:
+/// offline mode and `--config`. `--frozen` also demands an up-to-date
+/// lockfile, which the generated package lacks on a first run, so only its
+/// offline half applies.
+///
+/// Only resolution gets these. A forwarded `--config` can also set profile
+/// options that would change the artifact without changing its cache key.
+fn resolve_args(cargo_args: &[OsString]) -> Vec<String> {
+    let mut resolve = Vec::new();
+    let mut args = cargo_args.iter().filter_map(|arg| arg.to_str());
+    while let Some(arg) = args.next() {
+        match arg {
+            "--offline" | "--frozen" => resolve.push("--offline".to_string()),
+            "--config" => resolve.extend(
+                args.next().map(|config| format!("--config={config}")),
+            ),
+            _ if arg.starts_with("--config=") => resolve.push(arg.to_string()),
+            _ => {}
+        }
+    }
+    resolve
 }
 
 /// The profile settings Cargo gives the standard library's `compiler_builtins`
@@ -420,6 +446,30 @@ pub(crate) fn pre_link_args(artifact: &Path) -> [OsString; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_with_forwarded_offline_mode_and_config() {
+        let args = [
+            "--locked",
+            "--offline",
+            "--frozen",
+            "--config",
+            "net.offline=true",
+            "-p",
+            "program",
+            "--config=extra.toml",
+        ]
+        .map(OsString::from);
+        assert_eq!(
+            resolve_args(&args),
+            [
+                "--offline",
+                "--offline",
+                "--config=net.offline=true",
+                "--config=extra.toml",
+            ]
+        );
+    }
 
     #[test]
     fn follows_the_standard_librarys_builtins_profile() {
