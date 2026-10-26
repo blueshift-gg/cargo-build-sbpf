@@ -73,7 +73,8 @@ pub(crate) fn ensure(
     let package = generate_package(&root)?;
 
     let profile = std_profile(cargo, cargo_args)?;
-    let rustflags = rustflags(build_config, &profile);
+    let project = project_rustflags(cargo, cargo_args)?;
+    let rustflags = rustflags(build_config, &profile, &project);
     let (version, identity) = resolve_identity(cargo, &package, cargo_args)?;
     let key = cache_key(&rustflags, &version, &identity)?;
 
@@ -168,7 +169,7 @@ fn resolve_identity(
         .cargo_path(cargo)
         .env("RUSTUP_TOOLCHAIN", "nightly")
         .manifest_path(package.join("Cargo.toml"))
-        .other_options(resolve_args(cargo_args))
+        .other_options(config_args(cargo_args))
         .exec()
         .with_context(|| format!("failed to resolve {CRATE}"))?;
     let package = metadata
@@ -180,15 +181,16 @@ fn resolve_identity(
     Ok((version, package.id.repr))
 }
 
-/// The arguments forwarded to `cargo build` that also apply when resolving the
-/// builtins, so that resolving works wherever the program's own build would:
-/// offline mode and `--config`. `--frozen` also demands an up-to-date
+/// The arguments forwarded to `cargo build` that are Cargo configuration:
+/// `--config` and offline mode. `--frozen` also demands an up-to-date
 /// lockfile, which the generated package lacks on a first run, so only its
 /// offline half applies.
 ///
-/// Only resolution gets these. A forwarded `--config` can also set profile
-/// options that would change the artifact without changing its cache key.
-fn resolve_args(cargo_args: &[OsString]) -> Vec<String> {
+/// Resolving the builtins and reading the project's rustflags take these, so
+/// both see the configuration the program's own build does. The builtins
+/// build does not: a forwarded `--config` can also set profile options that
+/// would change the artifact without changing its cache key.
+fn config_args(cargo_args: &[OsString]) -> Vec<String> {
     let mut resolve = Vec::new();
     let mut args = cargo_args.iter().filter_map(|arg| arg.to_str());
     while let Some(arg) = args.next() {
@@ -273,9 +275,55 @@ fn parse_std_profile(unit_graph: &[u8]) -> Result<Profile> {
         .context("Cargo's unit graph has no standard `compiler_builtins`")
 }
 
+/// The project's rustflags for the target, merged the way the program's build
+/// gets them: from Cargo config, `CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS`
+/// and forwarded `--config`. Under `-Zbuild-std` they reach Rust's own
+/// `compiler_builtins` too. `RUSTFLAGS` is rejected before this runs.
+fn project_rustflags(
+    cargo: &OsStr,
+    cargo_args: &[OsString],
+) -> Result<Vec<String>> {
+    const KEY: &str = "target.bpfel-unknown-none.rustflags";
+    let output = Command::new(cargo)
+        .args(["+nightly", "-Z", "unstable-options", "config", "get"])
+        .args(["--format", "json-value"])
+        .args(config_args(cargo_args))
+        .arg(KEY)
+        .output()
+        .context("failed to read the project's rustflags")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Cargo reports a key nothing sets as an error.
+        if stderr.contains("is not set") {
+            return Ok(Vec::new());
+        }
+        bail!(
+            "reading `{KEY}` failed with status {}:\n{}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    // An array, or a string, which Cargo splits on whitespace.
+    Ok(
+        match serde_json::from_slice(&output.stdout)
+            .with_context(|| format!("failed to parse `{KEY}`"))?
+        {
+            serde_json::Value::String(flags) => {
+                flags.split_whitespace().map(str::to_string).collect()
+            }
+            flags => serde_json::from_value(flags)
+                .with_context(|| format!("unexpected `{KEY}`"))?,
+        },
+    )
+}
+
 /// The codegen settings the artifact is built with. The SBPF architecture and
 /// CPU, the target features and the relocation model have to match the
-/// application's target; the rest follows `profile`.
+/// application's target; the rest follows `profile` and the project's
+/// rustflags. They come in the order Cargo gives the standard library in the
+/// program's build: the profile, then the project's rustflags, then the SBPF
+/// settings, so the project's rustflags override its profile and the SBPF
+/// settings override both.
 ///
 /// The panic strategy is `immediate-abort`. With `abort`, a failed overflow
 /// check or debug assertion calls `core`'s panic functions, and those calls
@@ -285,7 +333,11 @@ fn parse_std_profile(unit_graph: &[u8]) -> Result<Profile> {
 ///
 /// Every one of these ends up in the cache key, so changing any of them
 /// produces a different artifact rather than reusing an incompatible one.
-fn rustflags(build_config: &BuildConfig, profile: &Profile) -> Vec<String> {
+fn rustflags(
+    build_config: &BuildConfig,
+    profile: &Profile,
+    project: &[String],
+) -> Vec<String> {
     let cpu = match build_config.arch {
         SbpfArch::V0 => "v2",
         SbpfArch::V3 => "v4",
@@ -295,7 +347,7 @@ fn rustflags(build_config: &BuildConfig, profile: &Profile) -> Vec<String> {
         serde_json::Value::String(level) => level.clone(),
         level => level.to_string(),
     };
-    [
+    let mut flags: Vec<String> = [
         "-C",
         &format!("opt-level={}", profile.opt_level),
         "-C",
@@ -304,24 +356,32 @@ fn rustflags(build_config: &BuildConfig, profile: &Profile) -> Vec<String> {
         &format!("debug-assertions={}", on_off(profile.debug_assertions)),
         "-C",
         &format!("debuginfo={debuginfo}"),
-        "-Z",
-        "unstable-options",
-        "-C",
-        "panic=immediate-abort",
-        "-C",
-        "relocation-model=static",
-        "-C",
-        &format!("target-cpu={cpu}"),
-        "-C",
-        "target-feature=+allows-misaligned-mem-access",
-        "--cfg=target_os=\"solana\"",
-        "--cfg=target_feature=\"static-syscalls\"",
-        "-A",
-        "explicit_builtin_cfgs_in_flags",
     ]
     .into_iter()
     .map(str::to_string)
-    .collect()
+    .collect();
+    flags.extend_from_slice(project);
+    flags.extend(
+        [
+            "-Z",
+            "unstable-options",
+            "-C",
+            "panic=immediate-abort",
+            "-C",
+            "relocation-model=static",
+            "-C",
+            &format!("target-cpu={cpu}"),
+            "-C",
+            "target-feature=+allows-misaligned-mem-access",
+            "--cfg=target_os=\"solana\"",
+            "--cfg=target_feature=\"static-syscalls\"",
+            "-A",
+            "explicit_builtin_cfgs_in_flags",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    flags
 }
 
 /// The cache key covers everything that can change the bitcode: which release
@@ -448,7 +508,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_with_forwarded_offline_mode_and_config() {
+    fn forwards_offline_mode_and_config() {
         let args = [
             "--locked",
             "--offline",
@@ -461,7 +521,7 @@ mod tests {
         ]
         .map(OsString::from);
         assert_eq!(
-            resolve_args(&args),
+            config_args(&args),
             [
                 "--offline",
                 "--offline",
@@ -472,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn follows_the_standard_librarys_builtins_profile() {
+    fn follows_the_standard_librarys_profile_and_rustflags() {
         // A project crate may also be called `compiler_builtins`; only the
         // standard library's counts.
         let unit_graph = br#"{"version": 1, "roots": [], "units": [
@@ -488,22 +548,32 @@ mod tests {
                          "debuginfo": "line-tables-only"}}
         ]}"#;
         let profile = parse_std_profile(unit_graph).unwrap();
+        let project = ["-C", "overflow-checks=off", "-C", "target-cpu=v2"]
+            .map(str::to_string);
         let flags = rustflags(
             &BuildConfig { arch: SbpfArch::V3, simd_0460: false },
             &profile,
+            &project,
         );
+        let position = |flag: &str| {
+            flags
+                .iter()
+                .position(|f| f == flag)
+                .unwrap_or_else(|| panic!("{flag} not in {flags:?}"))
+        };
         for flag in [
             "opt-level=s",
-            "overflow-checks=on",
             "debug-assertions=on",
             "debuginfo=line-tables-only",
             "panic=immediate-abort",
-            "target-cpu=v4",
         ] {
-            assert!(
-                flags.iter().any(|f| f == flag),
-                "{flag} not in {flags:?}"
-            );
+            position(flag);
         }
+        // The project's rustflags override its profile, and the SBPF settings
+        // override the project's rustflags; rustc takes the last of each.
+        assert!(
+            position("overflow-checks=on") < position("overflow-checks=off")
+        );
+        assert!(position("target-cpu=v2") < position("target-cpu=v4"));
     }
 }
