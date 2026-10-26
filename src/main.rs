@@ -1,11 +1,16 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    fs,
+    io::{BufRead as _, BufReader},
     path::PathBuf,
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
 };
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use cargo_metadata::{
+    camino::Utf8PathBuf, Message, MetadataCommand, TargetKind,
+};
 use clap::Parser;
 use toml_edit::Array;
 
@@ -131,7 +136,7 @@ fn main() -> Result<ExitCode> {
         eprintln!("using Cargo config at {}", config.path.display());
     }
 
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(&cargo);
     let mut paths = vec![linker_dir];
     if let Some(path) = env::var_os("PATH") {
         paths.extend(env::split_paths(&path));
@@ -156,6 +161,17 @@ fn main() -> Result<ExitCode> {
     if verbose {
         command.arg("--verbose");
     }
+    // Cargo's reports of the programs it built or reused are how
+    // `target/deploy` is refreshed afterwards. Cargo takes only one
+    // `--message-format`, so one passed through wins, and its output is
+    // echoed.
+    let message_format = cargo_args.iter().any(|arg| {
+        arg.to_str().is_some_and(|arg| arg.starts_with("--message-format"))
+    });
+    if !message_format {
+        command.arg("--message-format=json-render-diagnostics");
+    }
+    command.stdout(Stdio::piped());
 
     if verbose {
         let display_arg = |arg: &OsStr| {
@@ -183,6 +199,62 @@ fn main() -> Result<ExitCode> {
                 .join(" ")
         );
     }
-    let status = command.status()?;
+    let mut child = command.spawn()?;
+    let stdout =
+        child.stdout.take().context("failed to pipe cargo's stdout")?;
+    let mut programs = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        if message_format {
+            println!("{line}");
+        }
+        if let Ok(Message::CompilerArtifact(artifact)) =
+            serde_json::from_str(&line)
+        {
+            if artifact.target.is_kind(TargetKind::CDyLib) {
+                programs.extend(
+                    artifact
+                        .filenames
+                        .into_iter()
+                        .filter(|file| file.extension() == Some("so"))
+                        .map(|so| (artifact.manifest_path.clone(), so)),
+                );
+            }
+        }
+    }
+    let status = child.wait()?;
+    if status.success() {
+        refresh_deploy(&cargo, &programs)?;
+    }
     Ok(ExitCode::from(status.code().unwrap_or(1).try_into().unwrap_or(1)))
+}
+
+/// Copies each program Cargo just built or reused to
+/// `<workspace>/target/deploy/<name>.so`, the file sbpf-linker writes when it
+/// links. Cargo reuses a build without linking when its configuration was
+/// built before, so without this, switching back to, say, the other `--arch`
+/// leaves `target/deploy` with whatever was linked last.
+fn refresh_deploy(
+    cargo: &OsStr,
+    programs: &[(Utf8PathBuf, Utf8PathBuf)],
+) -> Result<()> {
+    for (manifest, so) in programs {
+        let workspace = MetadataCommand::new()
+            .cargo_path(cargo)
+            .env("RUSTUP_TOOLCHAIN", "nightly")
+            .manifest_path(manifest)
+            .no_deps()
+            .exec()
+            .with_context(|| {
+                format!("failed to locate the workspace of {manifest}")
+            })?
+            .workspace_root;
+        let deploy = workspace.join("target/deploy");
+        let name = so.file_name().context("program without a file name")?;
+        let name = name.strip_prefix("lib").unwrap_or(name);
+        fs::create_dir_all(&deploy)
+            .and_then(|()| fs::copy(so, deploy.join(name)))
+            .with_context(|| format!("failed to copy {so} to {deploy}"))?;
+    }
+    Ok(())
 }
