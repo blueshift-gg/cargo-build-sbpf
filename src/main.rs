@@ -33,8 +33,15 @@ enum CargoCli {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(version, about = "Build an SBPF program with Rust nightly")]
+#[command(
+    version,
+    about = "Build an SBPF program with Rust nightly",
+    args_conflicts_with_subcommands = true
+)]
 struct CommandLine {
+    #[command(subcommand)]
+    action: Option<Action>,
+
     /// SBPF architecture to build for. Defaults to config, then `v3`.
     #[clap(long, value_enum, hide = true)]
     arch: Option<SbpfArch>,
@@ -60,14 +67,37 @@ struct CommandLine {
     cargo_args: Vec<OsString>,
 }
 
+#[derive(Debug, clap::Subcommand)]
+enum Action {
+    /// Install or update the nightly toolchain and sbpf-linker this version
+    /// needs
+    Setup,
+}
+
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
+        action,
         arch,
         dump,
         verbose,
         simd_0460,
         cargo_args,
     }) = CargoCli::parse();
+
+    if let Some(Action::Setup) = action {
+        setup::setup()?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // The SBPF rustflags reach Cargo through Cargo config, which Cargo ignores
+    // entirely while either of these is set, even to an empty value.
+    for var in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"] {
+        if env::var_os(var).is_some() {
+            bail!(
+                "{var} is set, so Cargo would ignore the SBPF rustflags cargo-build-sbpf passes through Cargo config; unset it, or move its flags to CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS, which Cargo merges with them"
+            );
+        }
+    }
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
