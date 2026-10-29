@@ -107,8 +107,9 @@ fn main() -> Result<ExitCode> {
         "link-arg=--llvm-args=--disable-movsx",
         "link-arg=--llvm-args=--disable-bswap",
         "link-arg=--llvm-args=--disable-gotol",
-        format!("target-cpu={cpu}"),
-        "target-feature=+allows-misaligned-mem-access";
+        format!("target-cpu={cpu}");
+        "-Z",
+        "llvm-target-feature=+allows-misaligned-mem-access",
         pre_link_flag.to_string_lossy(),
         pre_link_arg.to_string_lossy(),
         "--cfg=target_os=\"solana\"",
