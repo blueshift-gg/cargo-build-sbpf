@@ -28,8 +28,12 @@ enum CargoCli {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(version, about = "Build an SBPF program with Rust nightly")]
+#[command(about = "Build an SBPF program with Rust nightly")]
 struct CommandLine {
+    /// Print version info for cargo-build-sbpf, sbpf-linker and the nightly toolchain.
+    #[clap(short = 'V', long)]
+    version: bool,
+
     /// SBPF architecture to build for. Defaults to config, then `v3`.
     #[clap(long, value_enum, hide = true)]
     arch: Option<SbpfArch>,
@@ -57,12 +61,18 @@ struct CommandLine {
 
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
+        version,
         arch,
         dump,
         verbose,
         simd_0460,
         cargo_args,
     }) = CargoCli::parse();
+
+    if version {
+        setup::print_versions();
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");

@@ -100,17 +100,54 @@ fn ensure_nightly() -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn print_versions() {
+    println!("cargo-build-sbpf {}", env!("CARGO_PKG_VERSION"));
+
+    match sbpf_linker()
+        .and_then(|linker| Command::new(linker).arg("--version").output().ok())
+        .filter(|output| output.status.success())
+    {
+        Some(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut lines =
+                stdout.lines().map(str::trim).filter(|line| !line.is_empty());
+            match (lines.next(), lines.next()) {
+                (Some(version), Some(llvm)) => println!("{version} ({llvm})"),
+                (Some(version), None) => println!("{version}"),
+                _ => println!("sbpf-linker not found"),
+            }
+        }
+        None => println!("sbpf-linker not found"),
+    }
+
+    let mut command = Command::new("rustup");
+    command.args(["run", "nightly", "rustc"]);
+    match VersionMeta::for_command(command) {
+        Ok(metadata) => match metadata.llvm_version {
+            Some(llvm) => {
+                println!("{} (LLVM {llvm})", metadata.short_version_string)
+            }
+            None => println!("{}", metadata.short_version_string),
+        },
+        Err(_) => println!("nightly toolchain not found"),
+    }
+}
+
+fn sbpf_linker() -> Option<PathBuf> {
+    which::which("sbpf-linker").ok().or_else(|| {
+        let bin = home::cargo_home().ok()?.join("bin");
+        which::which_in(
+            "sbpf-linker",
+            Some(bin.as_os_str()),
+            env::current_dir().ok()?,
+        )
+        .ok()
+    })
+}
+
 fn ensure_sbpf_linker() -> Result<PathBuf> {
     let compatible_sbpf_linker = || {
-        let linker = which::which("sbpf-linker").ok().or_else(|| {
-            let bin = home::cargo_home().ok()?.join("bin");
-            which::which_in(
-                "sbpf-linker",
-                Some(bin.as_os_str()),
-                env::current_dir().ok()?,
-            )
-            .ok()
-        })?;
+        let linker = sbpf_linker()?;
         let output = Command::new(&linker).arg("--version").output().ok()?;
         if !output.status.success() {
             return None;
