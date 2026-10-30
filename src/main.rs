@@ -15,12 +15,6 @@ mod setup;
 
 use config::{BuildConfig, SbpfArch};
 
-const SOLANA_COMPILER_BUILTINS_SYMBOLS: &str = concat!(
-    "__multi3,",
-    "__adddf3,__subdf3,__negdf2,__muldf3,__divdf3,",
-    "__floatundidf,__fixunsdfdi,__gedf2,__gtdf2",
-);
-
 #[derive(Debug, Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
 enum CargoCli {
@@ -108,7 +102,6 @@ fn main() -> Result<ExitCode> {
         "linker=sbpf-linker",
         "panic=abort",
         "relocation-model=static",
-        format!("link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"),
         format!("link-arg=--arch={arch}"),
         format!("link-arg=--llvm-args=-bpf-stack-size={stack_size}"),
         "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5",
@@ -155,13 +148,6 @@ fn main() -> Result<ExitCode> {
             .arg(
                 r#"target.bpfel-unknown-none.rustflags=['--cfg=target_os="solana"', '--cfg=target_feature="static-syscalls"', "-A", "explicit_builtin_cfgs_in_flags"]"#,
             )
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"
-                )),
-            ))
             .arg("--config")
             .arg(format!(
                 "target.bpfel-unknown-none.rustflags=[{}, {}]",
