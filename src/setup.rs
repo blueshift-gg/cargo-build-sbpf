@@ -88,6 +88,41 @@ pub(crate) fn setup() -> Result<()> {
     Ok(())
 }
 
+/// Shows this tool's, the linker's and the nightly toolchain's versions.
+/// `-V` calls this without building anything.
+pub(crate) fn print_versions() {
+    println!("cargo-build-sbpf {}", env!("CARGO_PKG_VERSION"));
+
+    let output = find("sbpf-linker")
+        .and_then(|linker| Command::new(linker).arg("--version").output().ok())
+        .filter(|output| output.status.success());
+    match output {
+        Some(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut lines =
+                stdout.lines().map(str::trim).filter(|line| !line.is_empty());
+            match (lines.next(), lines.next()) {
+                (Some(version), Some(llvm)) => println!("{version} ({llvm})"),
+                (Some(version), None) => println!("{version}"),
+                _ => println!("sbpf-linker not found"),
+            }
+        }
+        None => println!("sbpf-linker not found"),
+    }
+
+    let mut command = Command::new("rustup");
+    command.args(["run", "nightly", "rustc"]);
+    match VersionMeta::for_command(command) {
+        Ok(metadata) => match metadata.llvm_version {
+            Some(llvm) => {
+                println!("{} (LLVM {llvm})", metadata.short_version_string)
+            }
+            None => println!("{}", metadata.short_version_string),
+        },
+        Err(_) => println!("nightly toolchain not found"),
+    }
+}
+
 /// Everything a build needs, without changing anything. On success, the
 /// directory holding sbpf-linker; otherwise, what is missing or too old.
 fn check() -> std::result::Result<PathBuf, String> {

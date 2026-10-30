@@ -7,7 +7,7 @@ use std::{
     process::{Command, ExitCode, Stdio},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use cargo_metadata::{
     camino::Utf8PathBuf, Message, MetadataCommand, TargetKind,
 };
@@ -34,13 +34,16 @@ enum CargoCli {
 
 #[derive(Debug, clap::Args)]
 #[command(
-    version,
     about = "Build an SBPF program with Rust nightly",
     args_conflicts_with_subcommands = true
 )]
 struct CommandLine {
     #[command(subcommand)]
     action: Option<Action>,
+
+    /// Print version info for cargo-build-sbpf, sbpf-linker and the nightly toolchain.
+    #[clap(short = 'V', long)]
+    version: bool,
 
     /// SBPF architecture to build for. Defaults to config, then `v3`.
     #[clap(long, value_enum, hide = true)]
@@ -77,6 +80,7 @@ enum Action {
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
         action,
+        version,
         arch,
         dump,
         verbose,
@@ -89,15 +93,15 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // The SBPF rustflags reach Cargo through Cargo config, which Cargo ignores
-    // entirely while either of these is set, even to an empty value.
-    for var in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"] {
-        if env::var_os(var).is_some() {
-            bail!(
-                "{var} is set, so Cargo would ignore the SBPF rustflags cargo-build-sbpf passes through Cargo config; unset it, or move its flags to CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS, which Cargo merges with them"
-            );
-        }
+    if version {
+        setup::print_versions();
+        return Ok(ExitCode::SUCCESS);
     }
+
+    // These global rustflags must not be present by this point, they are
+    // either absent or removed.
+    assert!(env::var_os("RUSTFLAGS").is_none());
+    assert!(env::var_os("CARGO_ENCODED_RUSTFLAGS").is_none());
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
@@ -142,8 +146,9 @@ fn main() -> Result<ExitCode> {
         "link-arg=--llvm-args=--disable-movsx",
         "link-arg=--llvm-args=--disable-bswap",
         "link-arg=--llvm-args=--disable-gotol",
-        format!("target-cpu={cpu}"),
-        "target-feature=+allows-misaligned-mem-access";
+        format!("target-cpu={cpu}");
+        "-Z",
+        "llvm-target-feature=+allows-misaligned-mem-access",
         pre_link_flag.to_string_lossy(),
         pre_link_arg.to_string_lossy(),
         "--cfg=target_os=\"solana\"",
