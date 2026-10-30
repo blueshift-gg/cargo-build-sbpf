@@ -5,9 +5,9 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use toml_edit::Value;
+use toml_edit::{Array, Value};
 
 mod builtins;
 mod config;
@@ -59,6 +59,46 @@ struct CommandLine {
     cargo_args: Vec<OsString>,
 }
 
+const TARGET_RUSTFLAGS: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
+
+fn env_flag(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("invalid {name}")),
+    }
+}
+
+fn extra_rustflags(
+    encoded: Option<&str>,
+    plain: Option<&str>,
+    target: Option<&str>,
+) -> Vec<String> {
+    let mut flags: Vec<String> = target
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if let Some(encoded) = encoded {
+        // An explicitly empty encoded value still takes precedence over RUSTFLAGS.
+        if !encoded.is_empty() {
+            flags.extend(encoded.split('\x1f').map(str::to_owned));
+        }
+    } else if let Some(plain) = plain {
+        flags.extend(plain.split_whitespace().map(str::to_owned));
+    }
+    flags
+}
+
+fn append_rustflags(command: &mut Command, flags: &[String]) {
+    if !flags.is_empty() {
+        let flags: Array = flags.iter().map(String::as_str).collect();
+        command
+            .arg("--config")
+            .arg(format!("target.bpfel-unknown-none.rustflags={flags}"));
+    }
+}
+
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
         version,
@@ -73,6 +113,15 @@ fn main() -> Result<ExitCode> {
         setup::print_versions();
         return Ok(ExitCode::SUCCESS);
     }
+    let extra_flags = extra_rustflags(
+        env_flag("CARGO_ENCODED_RUSTFLAGS")?.as_deref(),
+        env_flag("RUSTFLAGS")?.as_deref(),
+        env_flag(TARGET_RUSTFLAGS)?.as_deref(),
+    );
+    // Neither the application nor the compiler-builtins build should inherit
+    // global flags that bypass their target-specific configuration.
+    env::remove_var("CARGO_ENCODED_RUSTFLAGS");
+    env::remove_var("RUSTFLAGS");
 
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
@@ -100,7 +149,7 @@ fn main() -> Result<ExitCode> {
             $(
                 flags.push(($rustc_flag).to_string());
             )+
-            flags.join(" ")
+            flags
         }};
     }
 
@@ -124,7 +173,8 @@ fn main() -> Result<ExitCode> {
         pre_link_arg.to_string_lossy(),
         "--cfg=target_os=\"solana\"",
         "--cfg=target_feature=\"static-syscalls\"",
-        "-A explicit_builtin_cfgs_in_flags",
+        "-A",
+        "explicit_builtin_cfgs_in_flags",
     );
 
     let mut command = Command::new(cargo);
@@ -190,12 +240,16 @@ fn main() -> Result<ExitCode> {
     } else {
         if let Some(path) = dump {
             rustflags.extend([
-                format!(" -C link-arg=--dump-module={}", path.display()),
-                format!(" -C link-arg=--dump-cfg-dir={}", path.display()),
+                "-C".into(),
+                format!("link-arg=--dump-module={}", path.display()),
+                "-C".into(),
+                format!("link-arg=--dump-cfg-dir={}", path.display()),
             ]);
         }
-        command.env("CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS", rustflags);
+        append_rustflags(&mut command, &rustflags);
     }
+    command.env_remove(TARGET_RUSTFLAGS);
+    append_rustflags(&mut command, &extra_flags);
 
     if verbose {
         let display_arg = |arg: &OsStr| {

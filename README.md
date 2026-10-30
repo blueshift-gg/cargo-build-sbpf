@@ -51,9 +51,15 @@ Build configuration is applied as follows:
 
 1. When Cargo finds no `.cargo/config.toml` or legacy `.cargo/config` in its
    configuration hierarchy, including `$CARGO_HOME`, the SBPF rustflags are
-   supplied through `CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS`.
+   supplied through Cargo’s command-line config as an array.
 2. When a config exists, Cargo reads its rustflags and `cargo-build-sbpf`
    supplies `sbpf-linker` through Cargo's command-line config.
+
+Global `CARGO_ENCODED_RUSTFLAGS` (preferred when set) or `RUSTFLAGS` are
+appended to the target flags, preserving local target configuration. Existing
+`CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS` are also retained. Encoded flags
+preserve arguments containing spaces. Global flags are excluded from the
+compiler-builtins build.
 
 ## Compiler builtins
 
