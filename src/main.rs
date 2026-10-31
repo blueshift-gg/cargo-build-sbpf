@@ -1,13 +1,18 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    fs,
+    io::{BufRead as _, BufReader},
     path::PathBuf,
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
 };
 
 use anyhow::{Context, Result};
+use cargo_metadata::{
+    camino::Utf8PathBuf, Message, MetadataCommand, TargetKind,
+};
 use clap::Parser;
-use toml_edit::{Array, Value};
+use toml_edit::Array;
 
 mod builtins;
 mod config;
@@ -21,6 +26,8 @@ const SOLANA_COMPILER_BUILTINS_SYMBOLS: &str = concat!(
     "__floatundidf,__fixunsdfdi,__gedf2,__gtdf2",
 );
 
+const TARGET_RUSTFLAGS: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
+
 #[derive(Debug, Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
 enum CargoCli {
@@ -28,8 +35,14 @@ enum CargoCli {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(about = "Build an SBPF program with Rust nightly")]
+#[command(
+    about = "Build an SBPF program with Rust nightly",
+    args_conflicts_with_subcommands = true
+)]
 struct CommandLine {
+    #[command(subcommand)]
+    action: Option<Action>,
+
     /// Print version info for cargo-build-sbpf, sbpf-linker and the nightly toolchain.
     #[clap(short = 'V', long)]
     version: bool,
@@ -59,7 +72,12 @@ struct CommandLine {
     cargo_args: Vec<OsString>,
 }
 
-const TARGET_RUSTFLAGS: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
+#[derive(Debug, clap::Subcommand)]
+enum Action {
+    /// Install or update the nightly toolchain and sbpf-linker this version
+    /// needs
+    Setup,
+}
 
 fn env_flag(name: &str) -> Result<Option<String>> {
     match env::var(name) {
@@ -101,6 +119,7 @@ fn append_rustflags(command: &mut Command, flags: &[String]) {
 
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
+        action,
         version,
         arch,
         dump,
@@ -108,6 +127,11 @@ fn main() -> Result<ExitCode> {
         simd_0460,
         cargo_args,
     }) = CargoCli::parse();
+
+    if let Some(Action::Setup) = action {
+        setup::setup()?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if version {
         setup::print_versions();
@@ -123,13 +147,19 @@ fn main() -> Result<ExitCode> {
     env::remove_var("CARGO_ENCODED_RUSTFLAGS");
     env::remove_var("RUSTFLAGS");
 
+    // These global rustflags must not be present by this point, they are
+    // either absent or removed.
+    assert!(env::var_os("RUSTFLAGS").is_none());
+    assert!(env::var_os("CARGO_ENCODED_RUSTFLAGS").is_none());
+
     let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
     let cargo = OsString::from("cargo");
     let linker_dir = setup::ensure()?;
     // The toolchain owns the compiler builtins: it builds and caches them
     // itself and passes the artifact to the linker. They are deliberately not
     // in the application's Cargo dependency graph.
-    let compiler_builtins = builtins::ensure(&cargo, &build_config)?;
+    let compiler_builtins =
+        builtins::ensure(&cargo, &build_config, &cargo_args)?;
     let [pre_link_flag, pre_link_arg] =
         builtins::pre_link_args(&compiler_builtins);
 
@@ -158,7 +188,6 @@ fn main() -> Result<ExitCode> {
         "panic=abort",
         "relocation-model=static",
         format!("link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"),
-        format!("link-arg=--arch={arch}"),
         format!("link-arg=--llvm-args=-bpf-stack-size={stack_size}"),
         "link-arg=--llvm-args=--bpf-max-stores-per-memfunc=5",
         "link-arg=--llvm-args=--disable-gotox",
@@ -176,8 +205,22 @@ fn main() -> Result<ExitCode> {
         "-A",
         "explicit_builtin_cfgs_in_flags",
     );
+    if !cargo_config.as_ref().is_some_and(|config| config.has_arch) {
+        rustflags.extend(["-C".into(), format!("link-arg=--arch={arch}")]);
+    }
+    if let Some(path) = dump {
+        rustflags.extend([
+            "-C".into(),
+            format!("link-arg=--dump-module={}", path.display()),
+            "-C".into(),
+            format!("link-arg=--dump-cfg-dir={}", path.display()),
+        ]);
+    }
+    if let Some(config) = cargo_config {
+        eprintln!("using Cargo config at {}", config.path.display());
+    }
 
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(&cargo);
     let mut paths = vec![linker_dir];
     if let Some(path) = env::var_os("PATH") {
         paths.extend(env::split_paths(&path));
@@ -190,64 +233,29 @@ fn main() -> Result<ExitCode> {
         .arg("--target")
         .arg("bpfel-unknown-none")
         .arg("-Z")
-        .arg("build-std=core,alloc");
+        .arg("build-std=core,alloc")
+        // Cargo merges these after any rustflags from Cargo config, and before
+        // any `--config` passed through below.
+        .arg("--config")
+        .arg(format!(
+            "target.bpfel-unknown-none.rustflags={}",
+            rustflags.into_iter().collect::<Array>()
+        ));
     command.args(&cargo_args);
     if verbose {
         command.arg("--verbose");
     }
-
-    if let Some(config) = cargo_config {
-        eprintln!("using Cargo config at {}", config.path.display());
-        command
-            .arg("--config")
-            .arg(r#"target.bpfel-unknown-none.linker="sbpf-linker""#)
-            .arg("--config")
-            .arg(
-                r#"target.bpfel-unknown-none.rustflags=['--cfg=target_os="solana"', '--cfg=target_feature="static-syscalls"', "-A", "explicit_builtin_cfgs_in_flags"]"#,
-            )
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--export={SOLANA_COMPILER_BUILTINS_SYMBOLS}"
-                )),
-            ))
-            .arg("--config")
-            .arg(format!(
-                "target.bpfel-unknown-none.rustflags=[{}, {}]",
-                Value::from(pre_link_flag.to_string_lossy().into_owned()),
-                Value::from(pre_link_arg.to_string_lossy().into_owned()),
-            ));
-        if !config.has_arch {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}]",
-                Value::from(format!("link-arg=--arch={arch}")),
-            ));
-        }
-        if let Some(path) = dump {
-            command.arg("--config").arg(format!(
-                "target.bpfel-unknown-none.rustflags=[\"-C\", {}, \"-C\", {}]",
-                Value::from(format!(
-                    "link-arg=--dump-module={}",
-                    path.display()
-                )),
-                Value::from(format!(
-                    "link-arg=--dump-cfg-dir={}",
-                    path.display()
-                )),
-            ));
-        }
-    } else {
-        if let Some(path) = dump {
-            rustflags.extend([
-                "-C".into(),
-                format!("link-arg=--dump-module={}", path.display()),
-                "-C".into(),
-                format!("link-arg=--dump-cfg-dir={}", path.display()),
-            ]);
-        }
-        append_rustflags(&mut command, &rustflags);
+    // Cargo's reports of the programs it built or reused are how
+    // `target/deploy` is refreshed afterwards. Cargo takes only one
+    // `--message-format`, so one passed through wins, and its output is
+    // echoed.
+    let message_format = cargo_args.iter().any(|arg| {
+        arg.to_str().is_some_and(|arg| arg.starts_with("--message-format"))
+    });
+    if !message_format {
+        command.arg("--message-format=json-render-diagnostics");
     }
+    command.stdout(Stdio::piped());
     command.env_remove(TARGET_RUSTFLAGS);
     append_rustflags(&mut command, &extra_flags);
 
@@ -277,6 +285,62 @@ fn main() -> Result<ExitCode> {
                 .join(" ")
         );
     }
-    let status = command.status()?;
+    let mut child = command.spawn()?;
+    let stdout =
+        child.stdout.take().context("failed to pipe cargo's stdout")?;
+    let mut programs = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        if message_format {
+            println!("{line}");
+        }
+        if let Ok(Message::CompilerArtifact(artifact)) =
+            serde_json::from_str(&line)
+        {
+            if artifact.target.is_kind(TargetKind::CDyLib) {
+                programs.extend(
+                    artifact
+                        .filenames
+                        .into_iter()
+                        .filter(|file| file.extension() == Some("so"))
+                        .map(|so| (artifact.manifest_path.clone(), so)),
+                );
+            }
+        }
+    }
+    let status = child.wait()?;
+    if status.success() {
+        refresh_deploy(&cargo, &programs)?;
+    }
     Ok(ExitCode::from(status.code().unwrap_or(1).try_into().unwrap_or(1)))
+}
+
+/// Copies each program Cargo just built or reused to
+/// `<workspace>/target/deploy/<name>.so`, the file sbpf-linker writes when it
+/// links. Cargo reuses a build without linking when its configuration was
+/// built before, so without this, switching back to, say, the other `--arch`
+/// leaves `target/deploy` with whatever was linked last.
+fn refresh_deploy(
+    cargo: &OsStr,
+    programs: &[(Utf8PathBuf, Utf8PathBuf)],
+) -> Result<()> {
+    for (manifest, so) in programs {
+        let workspace = MetadataCommand::new()
+            .cargo_path(cargo)
+            .env("RUSTUP_TOOLCHAIN", "nightly")
+            .manifest_path(manifest)
+            .no_deps()
+            .exec()
+            .with_context(|| {
+                format!("failed to locate the workspace of {manifest}")
+            })?
+            .workspace_root;
+        let deploy = workspace.join("target/deploy");
+        let name = so.file_name().context("program without a file name")?;
+        let name = name.strip_prefix("lib").unwrap_or(name);
+        fs::create_dir_all(&deploy)
+            .and_then(|()| fs::copy(so, deploy.join(name)))
+            .with_context(|| format!("failed to copy {so} to {deploy}"))?;
+    }
+    Ok(())
 }

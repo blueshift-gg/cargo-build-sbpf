@@ -6,6 +6,7 @@ Build an SBPF program with upstream nightly Rust.
 
 ```sh
 cargo install cargo-build-sbpf
+cargo build-sbpf setup
 ```
 
 ## CLI syntax
@@ -15,6 +16,10 @@ cargo build-sbpf
 
 USAGE:
     cargo build-sbpf [OPTIONS] [-- <CARGO_ARGS>...]
+    cargo build-sbpf setup
+
+COMMANDS:
+    setup    Install or update the nightly toolchain and sbpf-linker this version needs
 
 ARGUMENTS:
     [CARGO_ARGS]...    Arguments passed directly to `cargo build`
@@ -35,25 +40,30 @@ cargo build-sbpf --dump sbpf-dump
 This writes the LLVM `.ll` dumps and CFG `.dot` files to
 `sbpf-dump`.
 
-Before building, the command checks the toolchain and project dependencies.
-It asks for permission before fixing anything:
+## Setup
 
-- A nightly toolchain and `sbpf-linker` 0.2.3 or newer are required. The build
-  stops if either is unavailable and its installation is declined.
-- LLVM 23 is recommended because LLVM 22 generates less optimal SBPF code. If
-  updating nightly is declined, the command warns and continues.
+A build needs nightly Rust 1.100 or newer with LLVM 23, and an `sbpf-linker`
+release this version of `cargo-build-sbpf` supports (currently `^0.2.3`).
+`cargo build-sbpf setup` installs or updates them:
+
+- nightly, with `rustup`;
+- `cargo-binstall`, with its pinned release installer, if it is missing;
+- the newest matching `sbpf-linker`, with `cargo binstall`.
+
+Run it once after installing, and again after upgrading `cargo-build-sbpf`.
+
+Every build checks these first and never installs anything on its own. When
+something is missing or too old, a build started from a terminal offers to run
+setup; anywhere else, such as CI or an AI agent, the build stops and names the
+command. In CI, run `cargo build-sbpf setup && cargo build-sbpf`.
 
 The toolchain and dependency checks do not modify Cargo config. A linker
 installed in `$CARGO_HOME/bin` is used even when that directory is not already
 on `PATH`.
 
-Build configuration is applied as follows:
-
-1. When Cargo finds no `.cargo/config.toml` or legacy `.cargo/config` in its
-   configuration hierarchy, including `$CARGO_HOME`, the SBPF rustflags are
-   supplied through Cargo’s command-line config as an array.
-2. When a config exists, Cargo reads its rustflags and `cargo-build-sbpf`
-   supplies `sbpf-linker` through Cargo's command-line config.
+The SBPF rustflags are always passed through Cargo's `--config`. Cargo merges
+them after any `target.bpfel-unknown-none.rustflags` from Cargo config, and
+before rustflags from any `--config` passed through to `cargo build`.
 
 Global `CARGO_ENCODED_RUSTFLAGS` (preferred when set) or `RUSTFLAGS` are
 appended to the target flags, preserving local target configuration. Existing
@@ -65,4 +75,8 @@ compiler-builtins build.
 
 `solana-compiler-builtins` provides compiler builtins optimized for the SVM.
 `cargo build-sbpf` builds and bundles it automatically, so there is no need to
-add it to your `Cargo.toml`.
+add it to your `Cargo.toml`. Like Rust's own `compiler_builtins` under
+`-Zbuild-std`, it gets your build's profile settings (opt level, overflow
+checks, debug assertions and debuginfo) and your
+`target.bpfel-unknown-none.rustflags`, and each combination is cached
+separately.

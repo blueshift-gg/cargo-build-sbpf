@@ -2,8 +2,6 @@ use std::{env, fs, path::PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum;
-use dialoguer::Confirm;
-use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SbpfArch {
@@ -61,13 +59,10 @@ impl BuildConfig {
 
         let config = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let mut document = config
-            .parse::<DocumentMut>()
-            .with_context(|| format!("failed to parse {}", path.display()))?;
         let cargo_config: cargo_config2::de::Config =
-            toml_edit::de::from_document(document.clone()).with_context(
-                || format!("invalid Cargo config in {}", path.display()),
-            )?;
+            toml_edit::de::from_str(&config).with_context(|| {
+                format!("invalid Cargo config in {}", path.display())
+            })?;
         let rustflags = cargo_config
             .target
             .get("bpfel-unknown-none")
@@ -134,146 +129,16 @@ impl BuildConfig {
         let arch = arch.unwrap_or_default();
         let build_config = Self { arch, simd_0460 };
 
+        // The SBPF rustflags, stack size included, come after the config's,
+        // so a different value here is overridden rather than used.
         let expected = build_config.stack_size();
-        if configured_stack_size != Some(expected) {
-            match configured_stack_size {
-                None => eprintln!(
-                    "Cargo config at {} has no BPF stack size; this build requires {expected}.",
-                    path.display()
-                ),
-                Some(configured) => eprintln!(
-                    "Cargo config at {} uses BPF stack size {configured}; this build requires {expected}.",
-                    path.display()
-                ),
-            }
-            if !Confirm::new()
-                .with_prompt("Update the Cargo config?")
-                .default(false)
-                .interact()
-                .context("failed to request permission")?
-            {
-                bail!(
-                    "the configured BPF stack size does not match this build"
-                );
-            }
-            let target = document
-                .as_table_mut()
-                .entry("target")
-                .or_insert_with(|| {
-                    let mut table = Table::new();
-                    table.set_implicit(true);
-                    Item::Table(table)
-                })
-                .as_table_mut()
-                .context("Cargo config `target` must be a table")?;
-            let target = target
-                .entry("bpfel-unknown-none")
-                .or_insert_with(|| Item::Table(Table::new()))
-                .as_table_mut()
-                .context(
-                    "Cargo config `target.bpfel-unknown-none` must be a table",
-                )?;
-            let rustflags_item = target
-                .entry("rustflags")
-                .or_insert_with(|| value(Array::new()));
-            let fixed_stack_flag = |flag: &str| {
-                let normalized =
-                    flag.strip_prefix("-C").unwrap_or(flag).trim_start();
-                normalized
-                    .strip_prefix(
-                        "link-arg=--llvm-args=-bpf-stack-size=",
-                    )
-                    .or_else(|| {
-                        normalized.strip_prefix(
-                            "link-arg=--llvm-args=--bpf-stack-size=",
-                        )
-                    })
-                    .map(|_| {
-                        let prefix =
-                            if flag.starts_with("-C") { "-C" } else { "" };
-                        format!(
-                            "{prefix}link-arg=--llvm-args=-bpf-stack-size={expected}"
-                        )
-                    })
-            };
-
-            let mut replaced = false;
-            if let Some(flags) = rustflags_item.as_array_mut() {
-                for index in 0..flags.len() {
-                    if let Some(flag) = flags
-                        .get(index)
-                        .and_then(Value::as_str)
-                        .and_then(fixed_stack_flag)
-                    {
-                        flags.replace(index, flag);
-                        replaced = true;
-                    }
-                }
-            } else if rustflags_item.as_str().is_some() {
-                let mut flags = rustflags.clone();
-                for flag in &mut flags {
-                    if let Some(fixed) = fixed_stack_flag(flag) {
-                        *flag = fixed;
-                        replaced = true;
-                    }
-                }
-                if !replaced {
-                    flags.push("-C".into());
-                    flags.push(format!(
-                        "link-arg=--llvm-args=-bpf-stack-size={expected}"
-                    ));
-                    replaced = true;
-                }
-                *rustflags_item = value(flags.join(" "));
-            } else {
-                bail!(
-                    "Cargo config `target.bpfel-unknown-none.rustflags` must be a string or array"
-                );
-            }
-
-            if !replaced {
-                // helper function to presesrve format for appending a flag to a TOML array
-                let push_rustflag = |flags: &mut Array, rustflag: String| {
-                    let pair_decor = (0..flags.len().saturating_sub(1))
-                        .find(|&index| {
-                            flags.get(index).and_then(Value::as_str)
-                                == Some("-C")
-                        })
-                        .map(|index| {
-                            (
-                                flags.get(index).unwrap().decor().clone(),
-                                flags.get(index + 1).unwrap().decor().clone(),
-                            )
-                        });
-
-                    let mut option = Value::from("-C");
-                    let mut rustflag = Value::from(rustflag);
-                    if let Some((option_decor, rustflag_decor)) = pair_decor {
-                        *option.decor_mut() = option_decor;
-                        *rustflag.decor_mut() = rustflag_decor;
-                    } else {
-                        option.decor_mut().set_prefix("\n    ");
-                        rustflag.decor_mut().set_prefix(" ");
-                        if flags.is_empty() {
-                            flags.set_trailing("\n");
-                            flags.set_trailing_comma(true);
-                        }
-                    }
-
-                    flags.push_formatted(option);
-                    flags.push_formatted(rustflag);
-                };
-                let flags = rustflags_item
-                    .as_array_mut()
-                    .expect("new rustflags value is an array");
-                push_rustflag(
-                    flags,
-                    format!("link-arg=--llvm-args=-bpf-stack-size={expected}"),
-                );
-            }
-            fs::write(&path, document.to_string()).with_context(|| {
-                format!("failed to update {}", path.display())
-            })?;
+        if let Some(configured) =
+            configured_stack_size.filter(|&size| size != expected)
+        {
+            eprintln!(
+                "warning: Cargo config at {} sets BPF stack size {configured}, but this build requires {expected}; overriding it. Update or remove the value to silence this warning.",
+                path.display()
+            );
         }
 
         Ok((
@@ -311,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_string_rustflags_and_rejects_arch_conflicts() {
+    fn loads_string_rustflags_and_rejects_conflicts() {
         let root = env::temp_dir().join(format!(
             "cargo-build-sbpf-config-test-{}-{}",
             std::process::id(),
@@ -342,6 +207,19 @@ rustflags = "-C link-arg=--llvm-args=-bpf-stack-size=8192"
         )
         .unwrap();
         let cli_only = BuildConfig::load(Some(SbpfArch::V0), false);
+        // Without a stack size there is nothing to do: the build supplies it.
+        fs::write(project.join(".cargo/config.toml"), "[net]\nretry = 3\n")
+            .unwrap();
+        let unrelated = BuildConfig::load(None, false);
+        // A different one is overridden, and the config is left alone.
+        let mismatched_config = r#"[target.bpfel-unknown-none]
+rustflags = ["-C", "link-arg=--llvm-args=-bpf-stack-size=8192"]
+"#;
+        fs::write(project.join(".cargo/config.toml"), mismatched_config)
+            .unwrap();
+        let mismatched = BuildConfig::load(Some(SbpfArch::V3), false);
+        let after =
+            fs::read_to_string(project.join(".cargo/config.toml")).unwrap();
         env::set_current_dir(original_dir).unwrap();
         fs::remove_dir_all(root).unwrap();
 
@@ -356,5 +234,8 @@ rustflags = "-C link-arg=--llvm-args=-bpf-stack-size=8192"
         let (cli_only, cargo_config) = cli_only.unwrap();
         assert_eq!(cli_only.arch, SbpfArch::V0);
         assert!(!cargo_config.unwrap().has_arch);
+        assert!(!unrelated.unwrap().1.unwrap().has_arch);
+        assert_eq!(mismatched.unwrap().0.stack_size(), 4096);
+        assert_eq!(after, mismatched_config);
     }
 }

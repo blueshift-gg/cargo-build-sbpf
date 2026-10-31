@@ -84,6 +84,8 @@ dependencies = [
  "dialoguer",
  "home",
  "rustc_version",
+ "serde",
+ "serde_json",
  "toml_edit",
  "which",
 ]
