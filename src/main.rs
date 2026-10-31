@@ -26,6 +26,8 @@ const SOLANA_COMPILER_BUILTINS_SYMBOLS: &str = concat!(
     "__floatundidf,__fixunsdfdi,__gedf2,__gtdf2",
 );
 
+const TARGET_RUSTFLAGS: &str = "CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS";
+
 #[derive(Debug, Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
 enum CargoCli {
@@ -77,6 +79,44 @@ enum Action {
     Setup,
 }
 
+fn env_flag(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("invalid {name}")),
+    }
+}
+
+fn extra_rustflags(
+    encoded: Option<&str>,
+    plain: Option<&str>,
+    target: Option<&str>,
+) -> Vec<String> {
+    let mut flags: Vec<String> = target
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if let Some(encoded) = encoded {
+        // An explicitly empty encoded value still takes precedence over RUSTFLAGS.
+        if !encoded.is_empty() {
+            flags.extend(encoded.split('\x1f').map(str::to_owned));
+        }
+    } else if let Some(plain) = plain {
+        flags.extend(plain.split_whitespace().map(str::to_owned));
+    }
+    flags
+}
+
+fn append_rustflags(command: &mut Command, flags: &[String]) {
+    if !flags.is_empty() {
+        let flags: Array = flags.iter().map(String::as_str).collect();
+        command
+            .arg("--config")
+            .arg(format!("target.bpfel-unknown-none.rustflags={flags}"));
+    }
+}
+
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
         action,
@@ -97,6 +137,15 @@ fn main() -> Result<ExitCode> {
         setup::print_versions();
         return Ok(ExitCode::SUCCESS);
     }
+    let extra_flags = extra_rustflags(
+        env_flag("CARGO_ENCODED_RUSTFLAGS")?.as_deref(),
+        env_flag("RUSTFLAGS")?.as_deref(),
+        env_flag(TARGET_RUSTFLAGS)?.as_deref(),
+    );
+    // Neither the application nor the compiler-builtins build should inherit
+    // global flags that bypass their target-specific configuration.
+    env::remove_var("CARGO_ENCODED_RUSTFLAGS");
+    env::remove_var("RUSTFLAGS");
 
     // These global rustflags must not be present by this point, they are
     // either absent or removed.
@@ -207,6 +256,8 @@ fn main() -> Result<ExitCode> {
         command.arg("--message-format=json-render-diagnostics");
     }
     command.stdout(Stdio::piped());
+    command.env_remove(TARGET_RUSTFLAGS);
+    append_rustflags(&mut command, &extra_flags);
 
     if verbose {
         let display_arg = |arg: &OsStr| {

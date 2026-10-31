@@ -65,6 +65,12 @@ The SBPF rustflags are always passed through Cargo's `--config`. Cargo merges
 them after any `target.bpfel-unknown-none.rustflags` from Cargo config, and
 before rustflags from any `--config` passed through to `cargo build`.
 
+Global `CARGO_ENCODED_RUSTFLAGS` (preferred when set) or `RUSTFLAGS` are
+appended to the target flags, preserving local target configuration. Existing
+`CARGO_TARGET_BPFEL_UNKNOWN_NONE_RUSTFLAGS` are also retained. Encoded flags
+preserve arguments containing spaces. Global flags are excluded from the
+compiler-builtins build.
+
 ## Compiler builtins
 
 `solana-compiler-builtins` provides compiler builtins optimized for the SVM.
