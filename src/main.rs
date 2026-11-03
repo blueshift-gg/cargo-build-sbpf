@@ -59,6 +59,10 @@ struct CommandLine {
     #[clap(short, long)]
     verbose: bool,
 
+    /// Build in debug mode.
+    #[clap(long)]
+    debug: bool,
+
     #[clap(
         long = "simd-0460",
         hide = true,
@@ -156,6 +160,7 @@ fn main() -> Result<ExitCode> {
         arch,
         dump,
         verbose,
+        debug,
         simd_0460,
         cargo_args,
     }) = CargoCli::parse();
@@ -185,7 +190,8 @@ fn main() -> Result<ExitCode> {
     assert!(env::var_os("RUSTFLAGS").is_none());
     assert!(env::var_os("CARGO_ENCODED_RUSTFLAGS").is_none());
 
-    let (build_config, cargo_config) = BuildConfig::load(arch, simd_0460)?;
+    let (build_config, cargo_config) =
+        BuildConfig::load(arch, simd_0460, debug)?;
     let cargo = OsString::from("cargo");
     let linker_dir = setup::ensure()?;
     // The toolchain owns the compiler builtins: it builds and caches them
@@ -259,10 +265,11 @@ fn main() -> Result<ExitCode> {
         paths.extend(env::split_paths(&path));
     }
     command.env("PATH", env::join_paths(paths)?);
+    command.arg("+nightly").arg("build");
+    if !debug {
+        command.arg("--release");
+    }
     command
-        .arg("+nightly")
-        .arg("build")
-        .arg("--release")
         .arg("--target")
         .arg("bpfel-unknown-none")
         .arg("-Z")
@@ -273,7 +280,9 @@ fn main() -> Result<ExitCode> {
         .arg(format!(
             "target.bpfel-unknown-none.rustflags={}",
             rustflags.into_iter().collect::<Array>()
-        ));
+        ))
+        .arg("--config")
+        .arg(build_config.lto_config());
     command.args(&cargo_args);
     if verbose {
         command.arg("--verbose");
