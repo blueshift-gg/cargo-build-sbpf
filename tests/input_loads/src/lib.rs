@@ -6,21 +6,52 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-const PUBKEY_LEN: usize = 32;
+#[cfg(target_arch = "bpf")]
+mod program {
+    const SMALL_LEN: usize = 32;
+    const LARGE_LEN: usize = 128;
 
-static EXPECTED: [u8; PUBKEY_LEN] = [3u8; PUBKEY_LEN];
+    static SMALL_EXPECTED: [u8; SMALL_LEN] = [3u8; SMALL_LEN];
+    static LARGE_EXPECTED: [u8; LARGE_LEN] = [3u8; LARGE_LEN];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(input: *mut u8) -> u64 {
-    let pubkey =
-        unsafe { core::slice::from_raw_parts(input.add(16), PUBKEY_LEN) };
-    let expected =
-        unsafe { core::slice::from_raw_parts(EXPECTED.as_ptr(), PUBKEY_LEN) };
+    #[inline(never)]
+    fn compare_small(input: *const u8) -> bool {
+        let actual =
+            unsafe { core::slice::from_raw_parts(input.add(16), SMALL_LEN) };
+        let expected = unsafe {
+            core::slice::from_raw_parts(SMALL_EXPECTED.as_ptr(), SMALL_LEN)
+        };
+        !actual.ne(expected)
+    }
 
-    if pubkey.ne(expected) {
-        1
-    } else {
-        0
+    #[inline(never)]
+    fn compare_large(input: *const u8) -> bool {
+        let len = core::hint::black_box(LARGE_LEN);
+        let actual =
+            unsafe { core::slice::from_raw_parts(input.add(16), len) };
+        let expected = unsafe {
+            core::slice::from_raw_parts(LARGE_EXPECTED.as_ptr(), len)
+        };
+        !actual.ne(expected)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn entrypoint(input: *mut u8) -> u64 {
+        let len =
+            unsafe { core::ptr::read_volatile((input as *const u64).add(1)) }
+                as usize;
+
+        let matched = match len {
+            SMALL_LEN => compare_small(input),
+            LARGE_LEN => compare_large(input),
+            _ => return 2,
+        };
+
+        if matched {
+            0
+        } else {
+            1
+        }
     }
 }
 
@@ -34,8 +65,9 @@ mod tests {
 
     const PROGRAM_STEM: &str = "target/deploy/input_loads";
 
-    const MATCHING_INPUT_COMPUTE_UNITS: u64 = 11;
-    const DIFFERING_INPUT_COMPUTE_UNITS: u64 = 6;
+    // Byte-wise loads of the unaligned input would cost far more than this.
+    const SMALL_MATCH_COMPUTE_UNITS: u64 = 19;
+    const LARGE_MATCH_COMPUTE_UNITS: u64 = 31;
 
     fn run(data: Vec<u8>) -> (String, u64) {
         assert!(
@@ -53,17 +85,33 @@ mod tests {
 
     #[test]
     fn matching_input_succeeds_at_a_fixed_cost() {
-        let (program_result, compute_units) = run(vec![3u8; 32]);
+        for (len, expected_compute_units) in
+            [(32, SMALL_MATCH_COMPUTE_UNITS), (128, LARGE_MATCH_COMPUTE_UNITS)]
+        {
+            let (program_result, compute_units) = run(vec![3u8; len]);
 
-        assert_eq!(program_result, "Success");
-        assert_eq!(compute_units, MATCHING_INPUT_COMPUTE_UNITS);
+            assert_eq!(program_result, "Success", "len: {len}");
+            assert_eq!(compute_units, expected_compute_units, "len: {len}");
+        }
     }
 
     #[test]
-    fn differing_input_fails_at_a_fixed_cost() {
-        let (program_result, compute_units) = run(vec![4u8; 32]);
+    fn corrupted_input_fails() {
+        for len in [32, 128] {
+            let mut data = vec![3u8; len];
+            data[len / 2] = 4;
+            let (program_result, _) = run(data);
 
-        assert_eq!(program_result, "Failure(Custom(1))");
-        assert_eq!(compute_units, DIFFERING_INPUT_COMPUTE_UNITS);
+            assert_eq!(program_result, "Failure(Custom(1))", "len: {len}");
+        }
+    }
+
+    #[test]
+    fn unexpected_length_fails() {
+        for len in [0, 16, 64, 129] {
+            let (program_result, _) = run(vec![3u8; len]);
+
+            assert_eq!(program_result, "Failure(Custom(2))", "len: {len}");
+        }
     }
 }

@@ -235,10 +235,14 @@ fn main() -> Result<ExitCode> {
         "link-arg=--llvm-args=--disable-bswap",
         "link-arg=--llvm-args=--disable-gotol",
         format!("target-cpu={cpu}");
-        "-Z",
-        "llvm-target-feature=+allows-misaligned-mem-access",
         pre_link_flag.to_string_lossy(),
         pre_link_arg.to_string_lossy(),
+        // Code is generated in the linker. This comes before the
+        // `--cpu-features` rustc derives from `-C target-feature` and before
+        // any `-C link-arg`, and sbpf-linker lets a later setting of a feature
+        // override it, so the project can still opt out.
+        "-Z",
+        "pre-link-arg=--cpu-features=+allows-misaligned-mem-access",
         "--cfg=target_os=\"solana\"",
         "--cfg=target_feature=\"static-syscalls\"",
         "-A",

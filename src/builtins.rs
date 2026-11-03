@@ -377,8 +377,6 @@ fn rustflags(
             "relocation-model=static",
             "-C",
             &format!("target-cpu={cpu}"),
-            "-Z",
-            "llvm-target-feature=+allows-misaligned-mem-access",
             "--cfg=target_os=\"solana\"",
             "--cfg=target_feature=\"static-syscalls\"",
             "-A",
