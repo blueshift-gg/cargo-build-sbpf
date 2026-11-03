@@ -23,6 +23,7 @@ impl SbpfArch {
 pub(crate) struct BuildConfig {
     pub(crate) arch: SbpfArch,
     pub(crate) simd_0460: bool,
+    pub(crate) debug: bool,
 }
 
 pub(crate) struct CargoConfig {
@@ -48,11 +49,12 @@ impl BuildConfig {
     pub(crate) fn load(
         cli_arch: Option<SbpfArch>,
         simd_0460: bool,
+        debug: bool,
     ) -> Result<(Self, Option<CargoConfig>)> {
         let current_dir = env::current_dir()?;
         let Some(path) = cargo_config2::Walk::new(&current_dir).next() else {
             return Ok((
-                Self { arch: cli_arch.unwrap_or_default(), simd_0460 },
+                Self { arch: cli_arch.unwrap_or_default(), simd_0460, debug },
                 None,
             ));
         };
@@ -127,7 +129,7 @@ impl BuildConfig {
             )?;
         }
         let arch = arch.unwrap_or_default();
-        let build_config = Self { arch, simd_0460 };
+        let build_config = Self { arch, simd_0460, debug };
 
         // The SBPF rustflags, stack size included, come after the config's,
         // so a different value here is overridden rather than used.
@@ -154,6 +156,11 @@ impl BuildConfig {
             4096
         }
     }
+
+    pub(crate) fn lto_config(self) -> String {
+        let profile = if self.debug { "dev" } else { "release" };
+        format!("profile.{profile}.lto=\"off\"")
+    }
 }
 
 #[cfg(test)]
@@ -163,15 +170,32 @@ mod tests {
     #[test]
     fn stack_size_policy() {
         assert_eq!(
-            BuildConfig { arch: SbpfArch::V0, simd_0460: false }.stack_size(),
+            BuildConfig { arch: SbpfArch::V0, simd_0460: false, debug: false }
+                .stack_size(),
             8192
         );
         for build in [
-            BuildConfig { arch: SbpfArch::V0, simd_0460: true },
-            BuildConfig { arch: SbpfArch::V3, simd_0460: false },
-            BuildConfig { arch: SbpfArch::V3, simd_0460: true },
+            BuildConfig { arch: SbpfArch::V0, simd_0460: true, debug: false },
+            BuildConfig { arch: SbpfArch::V3, simd_0460: false, debug: false },
+            BuildConfig { arch: SbpfArch::V3, simd_0460: true, debug: false },
         ] {
             assert_eq!(build.stack_size(), 4096);
+        }
+    }
+
+    #[test]
+    fn test_lto_config() {
+        for build in [
+            BuildConfig { arch: SbpfArch::V0, simd_0460: false, debug: false },
+            BuildConfig { arch: SbpfArch::V3, simd_0460: true, debug: false },
+        ] {
+            assert_eq!(build.lto_config(), "profile.release.lto=\"off\"");
+        }
+        for build in [
+            BuildConfig { arch: SbpfArch::V0, simd_0460: false, debug: true },
+            BuildConfig { arch: SbpfArch::V3, simd_0460: true, debug: true },
+        ] {
+            assert_eq!(build.lto_config(), "profile.dev.lto=\"off\"");
         }
     }
 
@@ -197,8 +221,8 @@ rustflags = "-C link-arg=--arch=v0 -C link-arg=--llvm-args=-bpf-stack-size=8192"
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(&project).unwrap();
-        let loaded = BuildConfig::load(None, false);
-        let conflict = BuildConfig::load(Some(SbpfArch::V3), false);
+        let loaded = BuildConfig::load(None, false, false);
+        let conflict = BuildConfig::load(Some(SbpfArch::V3), false, false);
         fs::write(
             project.join(".cargo/config.toml"),
             r#"[target.bpfel-unknown-none]
@@ -206,18 +230,18 @@ rustflags = "-C link-arg=--llvm-args=-bpf-stack-size=8192"
 "#,
         )
         .unwrap();
-        let cli_only = BuildConfig::load(Some(SbpfArch::V0), false);
+        let cli_only = BuildConfig::load(Some(SbpfArch::V0), false, false);
         // Without a stack size there is nothing to do: the build supplies it.
         fs::write(project.join(".cargo/config.toml"), "[net]\nretry = 3\n")
             .unwrap();
-        let unrelated = BuildConfig::load(None, false);
+        let unrelated = BuildConfig::load(None, false, false);
         // A different one is overridden, and the config is left alone.
         let mismatched_config = r#"[target.bpfel-unknown-none]
 rustflags = ["-C", "link-arg=--llvm-args=-bpf-stack-size=8192"]
 "#;
         fs::write(project.join(".cargo/config.toml"), mismatched_config)
             .unwrap();
-        let mismatched = BuildConfig::load(Some(SbpfArch::V3), false);
+        let mismatched = BuildConfig::load(Some(SbpfArch::V3), false, false);
         let after =
             fs::read_to_string(project.join(".cargo/config.toml")).unwrap();
         env::set_current_dir(original_dir).unwrap();

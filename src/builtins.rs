@@ -72,7 +72,7 @@ pub(crate) fn ensure(
     let root = cache_root()?;
     let package = generate_package(&root)?;
 
-    let profile = std_profile(cargo, cargo_args)?;
+    let profile = std_profile(cargo, build_config, cargo_args)?;
     let project = project_rustflags(cargo, cargo_args)?;
     let rustflags = rustflags(build_config, &profile, &project);
     let (version, identity) = resolve_identity(cargo, &package, cargo_args)?;
@@ -85,7 +85,7 @@ pub(crate) fn ensure(
     }
 
     eprintln!("building {CRATE} {identity} for the SBPF toolchain");
-    build(cargo, &package, &cache, &rustflags)?;
+    build(cargo, &package, &cache, build_config, &rustflags)?;
 
     if !artifact.is_file() {
         bail!("built {CRATE} but no rlib landed in {}", cache.display());
@@ -239,11 +239,17 @@ struct UnitTarget {
 /// Reads that profile from Cargo's unit graph for the same build, including
 /// the arguments forwarded to `cargo build`, so `Cargo.toml`, Cargo config,
 /// `CARGO_PROFILE_*` and `--profile` all count. Nothing is built.
-fn std_profile(cargo: &OsStr, cargo_args: &[OsString]) -> Result<Profile> {
-    let output = Command::new(cargo)
-        .arg("+nightly")
-        .arg("build")
-        .arg("--release")
+fn std_profile(
+    cargo: &OsStr,
+    build_config: &BuildConfig,
+    cargo_args: &[OsString],
+) -> Result<Profile> {
+    let mut command = Command::new(cargo);
+    command.arg("+nightly").arg("build");
+    if !build_config.debug {
+        command.arg("--release");
+    }
+    let output = command
         .arg("--target")
         .arg("bpfel-unknown-none")
         .arg("-Z")
@@ -426,6 +432,7 @@ fn build(
     cargo: &OsStr,
     package: &Path,
     cache: &Path,
+    build_config: &BuildConfig,
     rustflags: &[String],
 ) -> Result<()> {
     let target_dir = cache.join("target");
@@ -433,10 +440,12 @@ fn build(
         format!("failed to create {}", target_dir.display())
     })?;
 
-    let mut child = Command::new(cargo)
-        .arg("+nightly")
-        .arg("build")
-        .arg("--release")
+    let mut command = Command::new(cargo);
+    command.arg("+nightly").arg("build");
+    if !build_config.debug {
+        command.arg("--release");
+    }
+    let mut child = command
         .arg("--lib")
         .arg("--target")
         .arg("bpfel-unknown-none")
@@ -447,6 +456,8 @@ fn build(
         .arg(package.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(&target_dir)
+        .arg("--config")
+        .arg(build_config.lto_config())
         // The artifact is cached under these flags, so it is built with exactly
         // them: `CARGO_ENCODED_RUSTFLAGS` outranks `RUSTFLAGS` and the rustflags
         // of any Cargo config, and the profile settings in it come after the
@@ -551,7 +562,11 @@ mod tests {
         let project = ["-C", "overflow-checks=off", "-C", "target-cpu=v2"]
             .map(str::to_string);
         let flags = rustflags(
-            &BuildConfig { arch: SbpfArch::V3, simd_0460: false },
+            &BuildConfig {
+                arch: SbpfArch::V3,
+                simd_0460: false,
+                debug: false,
+            },
             &profile,
             &project,
         );

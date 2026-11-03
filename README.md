@@ -27,6 +27,7 @@ ARGUMENTS:
 OPTIONS:
         --dump <DIR>     Dump the linked LLVM module and control-flow graphs into this directory
     -v, --verbose        Show the Cargo command and enable Cargo's verbose output
+        --debug          Build in debug mode
     -h, --help           Print help
     -V, --version        Print version
 ```
