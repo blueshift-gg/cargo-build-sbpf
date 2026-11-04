@@ -56,7 +56,7 @@ const CRATE: &str = "solana-compiler-builtins";
 /// at resolution, with a message naming the missing feature, rather than
 /// quietly building strong symbols.
 const DEPENDENCY: &str =
-    "{ version = \"^0.2\", features = [\"weak-linkage\"] }";
+    "{ version = \"^0.3\", features = [\"weak-linkage\"] }";
 
 /// Point this at a directory to relocate the generated package and the
 /// artifact cache.
@@ -158,8 +158,11 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
 /// What Cargo resolved the builtins to: the version, and the package id.
 /// The id pins where the builtins came from and at what version, so a
 /// dependency change changes the cache key. `cargo metadata` resolves the
-/// manifest and reports both, and keeps the lockfile in sync, so removing
-/// the cache directory picks up a newer release.
+/// manifest and reports both, and keeps the lockfile in sync. The release it
+/// first resolves stays pinned by `builtins-package/Cargo.lock` under the
+/// cache root; removing that lockfile (or the whole cache root) picks up a
+/// newer release within `DEPENDENCY`'s range. Removing one artifact directory
+/// only rebuilds the same release.
 fn resolve_identity(
     cargo: &OsStr,
     package: &Path,

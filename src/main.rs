@@ -21,7 +21,7 @@ mod setup;
 use config::{BuildConfig, SbpfArch};
 
 const SOLANA_COMPILER_BUILTINS_SYMBOLS: &str = concat!(
-    "__multi3,",
+    "__multi3,__udivti3,__umodti3,",
     "__adddf3,__subdf3,__negdf2,__muldf3,__divdf3,",
     "__floatundidf,__fixunsdfdi,__gedf2,__gtdf2",
 );
