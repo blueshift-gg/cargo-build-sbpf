@@ -40,3 +40,48 @@ jobs:
           toolchain: "nightly"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+
+  compiler-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out sbpf-compiler-tests
+        uses: actions/checkout@v4
+        with:
+          repository: blueshift-gg/sbpf-compiler-tests
+          path: sbpf-compiler-tests
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly"
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            sbpf-compiler-tests
+          cache-on-failure: true
+      - name: Install cargo-build-sbpf
+        run: cargo install --path . --locked --force
+      - name: Setup cargo-build-sbpf
+        run: cargo build-sbpf setup
+      - name: Show tool versions
+        run: cargo build-sbpf -V
+      - name: Run compiler tests
+        working-directory: sbpf-compiler-tests
+        shell: bash
+        run: |
+          cargo run --release --locked 2>&1 | tee compiler-tests.log
+          if grep -q "Issues detected" compiler-tests.log; then
+            echo "::error::Compiler test report has issues."
+            exit 1
+          fi
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-tests-artifacts
+          path: /tmp/cargo-build-sbpf/
+          if-no-files-found: ignore
