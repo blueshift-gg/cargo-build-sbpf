@@ -44,7 +44,7 @@ This writes the LLVM `.ll` dumps and CFG `.dot` files to
 ## Setup
 
 A build needs nightly Rust 1.100 or newer with LLVM 23, and an `sbpf-linker`
-release this version of `cargo-build-sbpf` supports (currently `^0.2.3`).
+release this version of `cargo-build-sbpf` supports (currently `^0.2.7`).
 `cargo build-sbpf setup` installs or updates them:
 
 - nightly, with `rustup`;

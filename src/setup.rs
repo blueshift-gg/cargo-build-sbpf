@@ -15,7 +15,7 @@ const MINIMUM_LLVM_VERSION: u64 = 23;
 
 /// The sbpf-linker releases this version of cargo-build-sbpf works with.
 /// `setup` installs the newest release that matches.
-const SBPF_LINKER: &str = "^0.2.3";
+const SBPF_LINKER: &str = "^0.2.7";
 
 /// Checks the toolchain before a build and returns the directory holding
 /// sbpf-linker.
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn selects_a_compatible_linker_after_incompatible_candidates() {
-        let requirement = VersionReq::parse("^0.2.3").unwrap();
+        let requirement = sbpf_linker_requirement();
         let compatible = PathBuf::from("/cargo/bin/sbpf-linker");
         let selected = select_compatible_linker(
             [
@@ -304,7 +304,11 @@ mod tests {
                     PathBuf::from("/old/sbpf-linker"),
                     Some(Version::new(0, 1, 9)),
                 ),
-                (compatible.clone(), Some(Version::new(0, 2, 4))),
+                (
+                    PathBuf::from("/outdated/sbpf-linker"),
+                    Some(Version::new(0, 2, 6)),
+                ),
+                (compatible.clone(), Some(Version::new(0, 2, 7))),
             ],
             &requirement,
         );
