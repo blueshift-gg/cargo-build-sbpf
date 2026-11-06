@@ -1,6 +1,6 @@
 # cargo-build-sbpf
 
-Build an Solana program with upstream nightly Rust.
+Build a Solana program with upstream nightly Rust.
 
 ## Installation
 
