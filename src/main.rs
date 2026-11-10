@@ -259,6 +259,9 @@ fn main() -> Result<ExitCode> {
             format!("link-arg=--dump-cfg-dir={}", path.display()),
         ]);
     }
+    if debug {
+        rustflags.extend(["-C".into(), "link-arg=--btf".into()]);
+    }
     if let Some(config) = cargo_config {
         eprintln!("using Cargo config at {}", config.path.display());
     }
