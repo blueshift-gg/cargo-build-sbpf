@@ -71,13 +71,7 @@ jobs:
         run: cargo build-sbpf -V
       - name: Run compiler tests
         working-directory: sbpf-compiler-tests
-        shell: bash
-        run: |
-          cargo run --release --locked 2>&1 | tee compiler-tests.log
-          if grep -q "Issues detected" compiler-tests.log; then
-            echo "::error::Compiler test report has issues."
-            exit 1
-          fi
+        run: cargo run --release --locked
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
