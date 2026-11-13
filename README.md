@@ -38,7 +38,7 @@ OPTIONS:
 Minimum requirement to build a Solana program
 
 - nightly Rust 1.100 or newer
-- `sbpf-linker` ^0.2.7
+- `sbpf-linker` ^0.2.8
 
 Run `cargo build-sbpf setup` after an install or an upgrade, it installs or updates:
 
