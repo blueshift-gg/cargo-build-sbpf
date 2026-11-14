@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-build-sbpf"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "cargo-config2",
