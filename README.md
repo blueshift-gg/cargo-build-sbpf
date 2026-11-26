@@ -17,10 +17,8 @@ cargo build-sbpf setup
 ## CLI syntax
 
 ```text
-cargo build-sbpf
-
 USAGE:
-    cargo build-sbpf [OPTIONS] [-- <CARGO_ARGS>...]
+    cargo {build-sbpf | test-sbpf} [OPTIONS] [-- <CARGO_ARGS>...]
 
 ARGUMENTS:
     [CARGO_ARGS]...    Arguments passed directly to `cargo +nightly build`
@@ -32,6 +30,10 @@ OPTIONS:
     -v, --verbose        Show the Cargo command and enable Cargo's verbose output
     -V, --version        Print version
 ```
+
+Both commands accept the same options and use the same SBPF build
+configuration. `cargo test-sbpf` runs `cargo test` after a successful SBPF
+build, using the selected packages and features and Cargo's default test profile.
 
 ## Setup
 
