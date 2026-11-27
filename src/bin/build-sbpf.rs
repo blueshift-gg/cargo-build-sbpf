@@ -3,22 +3,20 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     io::{BufRead as _, BufReader},
-    path::PathBuf,
     process::{Command, ExitCode, Stdio},
 };
 
 use anyhow::{bail, Context, Result};
+use cargo_build_sbpf::{BuildOptions, SbpfArch};
 use cargo_metadata::{
     camino::Utf8PathBuf, Message, MetadataCommand, TargetKind,
 };
 use clap::Parser;
 use toml_edit::Array;
 
-mod builtins;
-mod config;
-mod setup;
+mod build;
 
-use config::{BuildConfig, SbpfArch};
+use build::{builtins, config::BuildConfig, setup};
 
 const SOLANA_COMPILER_BUILTINS_SYMBOLS: &str = concat!(
     "__multi3,__udivti3,__umodti3,",
@@ -43,37 +41,8 @@ struct CommandLine {
     #[command(subcommand)]
     action: Option<Action>,
 
-    /// Print version info for cargo-build-sbpf, sbpf-linker and the nightly toolchain.
-    #[clap(short = 'V', long)]
-    version: bool,
-
-    /// SBPF architecture to build for. Defaults to config, then `v3`.
-    #[clap(long, value_enum, hide = true)]
-    arch: Option<SbpfArch>,
-
-    /// Dump the linked LLVM module and control-flow graphs into this directory.
-    #[clap(long, value_name = "DIR")]
-    dump: Option<PathBuf>,
-
-    /// Show the Cargo command and enable Cargo's verbose output.
-    #[clap(short, long)]
-    verbose: bool,
-
-    /// Build in debug mode.
-    #[clap(long)]
-    debug: bool,
-
-    #[clap(
-        long = "simd-0460",
-        hide = true,
-        action = clap::ArgAction::SetTrue,
-        default_value_t = false
-    )]
-    simd_0460: bool,
-
-    /// Arguments passed directly to `cargo build`
-    #[arg(last = true, value_name = "CARGO_ARGS")]
-    cargo_args: Vec<OsString>,
+    #[command(flatten)]
+    options: BuildOptions,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -156,13 +125,16 @@ fn forwarded_json_message_format(cargo_args: &[OsString]) -> Result<bool> {
 fn main() -> Result<ExitCode> {
     let CargoCli::BuildSbpf(CommandLine {
         action,
-        version,
-        arch,
-        dump,
-        verbose,
-        debug,
-        simd_0460,
-        cargo_args,
+        options:
+            BuildOptions {
+                version,
+                arch,
+                dump,
+                verbose,
+                debug,
+                simd_0460,
+                cargo_args,
+            },
     }) = CargoCli::parse();
 
     if let Some(Action::Setup) = action {

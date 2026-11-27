@@ -1,23 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::ValueEnum;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-pub(crate) enum SbpfArch {
-    V0,
-    #[default]
-    V3,
-}
-
-impl SbpfArch {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::V0 => "v0",
-            Self::V3 => "v3",
-        }
-    }
-}
+use cargo_build_sbpf::SbpfArch;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BuildConfig {

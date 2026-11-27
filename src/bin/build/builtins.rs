@@ -41,7 +41,9 @@ use anyhow::{bail, Context, Result};
 use cargo_metadata::{Message, MetadataCommand};
 use serde::Deserialize;
 
-use crate::config::{BuildConfig, SbpfArch};
+use cargo_build_sbpf::SbpfArch;
+
+use super::config::BuildConfig;
 
 const CRATE: &str = "solana-compiler-builtins";
 
